@@ -1,7 +1,7 @@
 // BlinkJS - portal.ts
 // Allows rendering components outside main root
 
-import { mountApp, unmountApp } from './internal/runtime';
+import { mountApp, unmountApp } from '@engine/internal/runtime';
 
 type PortalInstance = {
   container: HTMLElement; // wrapper div we create and mount into

@@ -1,8 +1,8 @@
 // BlinkJS - context.ts
 // Fixed: Use display:contents to prevent Fragment Unmount Crash
 
-import { el } from '../internal/dom';
-import { getCurrentComponent } from '../internal/component';
+import { el } from '@engine/internal/dom';
+import { getCurrentComponent } from '@engine/internal/component';
 
 export type Context<T> = {
   key: symbol;

@@ -1,7 +1,7 @@
 // BlinkJS - strict.ts
 // Dev-time runtime checks
 
-import { getCurrentComponentUnsafe } from './internal/component';
+import { getCurrentComponentUnsafe } from '@engine/internal/component';
 
 let strictEnabled = false;
 
