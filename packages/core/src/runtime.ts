@@ -2,7 +2,7 @@
 // BlinkJS - runtime.ts
 // Mounting, rendering, update scheduling (delegated to batcher), and component lifecycle wiring.
 
-import { VNode, createDom, FragmentSymbol } from './dom';
+import { VNode, VChild, createDom, FragmentSymbol, isVNode } from './dom';
 import {
   ComponentInstance,
   createComponentInstance,
@@ -83,11 +83,12 @@ export function unmountApp(rootSelector: string | Element) {
   rootEl.innerHTML = '';
 }
 
-function invokeComponent(inst: ComponentInstance, compFn: Function, props: any): VNode | string | number {
+function invokeComponent(inst: ComponentInstance, compFn: Function, props: any): VChild {
   resetHooks(inst);
   setCurrentComponent(inst);
 
-  inst.vnode = { tag: compFn, props, children: [] } as any;
+  // inst.vnode is just a wrapper for context, not the full tree
+  inst.vnode = { tag: compFn as any, props, children: [] };
 
   let result: any;
   try {
@@ -96,6 +97,9 @@ function invokeComponent(inst: ComponentInstance, compFn: Function, props: any):
     setCurrentComponent(null);
   }
 
+  if (result === null || result === undefined) {
+    return null;
+  }
   if (typeof result === 'string' || typeof result === 'number') {
     return result;
   }
@@ -110,9 +114,16 @@ function invokeComponent(inst: ComponentInstance, compFn: Function, props: any):
 }
 
 /**
+ * Helper to check if a VNode is a component (function tag)
+ */
+function isComponentVNode(vnode: VChild): vnode is VNode {
+  return isVNode(vnode) && typeof vnode.tag === 'function';
+}
+
+/**
  * Exported so dom.ts can delegate function-component VNodes here (initial mount path).
  */
-export function renderVNode(vnode: any): Node {
+export function renderVNode(vnode: VChild): Node {
   if (vnode === null || vnode === undefined) {
     return document.createTextNode('');
   }
@@ -120,7 +131,7 @@ export function renderVNode(vnode: any): Node {
     return document.createTextNode(String(vnode));
   }
 
-  if (typeof vnode.tag === 'function') {
+  if (isComponentVNode(vnode)) {
     const compFn = vnode.tag as Function;
     const inst = createComponentInstance((compFn as any).name || 'Component');
 
@@ -138,6 +149,7 @@ export function renderVNode(vnode: any): Node {
     return childDom;
   }
 
+  // If it's a standard VNode (HTML tag or Fragment)
   return createDom(vnode);
 }
 
@@ -148,6 +160,7 @@ export function rerenderComponent(inst: ComponentInstance) {
   if (!inst || !inst.mounted) return;
 
   const vnodeWrapper = inst.vnode;
+  // Safety check: ensure it is actually a component wrapper
   if (!vnodeWrapper || typeof vnodeWrapper.tag !== 'function') return;
 
   const compFn = vnodeWrapper.tag as Function;
@@ -156,8 +169,12 @@ export function rerenderComponent(inst: ComponentInstance) {
   const newSubtree = invokeComponent(inst, compFn, vnodeWrapper.props || {});
   const oldDom = inst.dom as Node;
   const parent = oldDom.parentNode as Node | null;
-  if (parent && oldSubtree != null) {
-    const newDom = patch(parent, oldSubtree as any, newSubtree as any, oldDom);
+
+  if (parent) {
+    // We can safely pass 'undefined' as VChild? No, let's ensure null fallback
+    const validOld = oldSubtree === undefined ? null : oldSubtree;
+    const newDom = patch(parent, validOld, newSubtree, oldDom);
+    
     inst.dom = newDom;
     inst.subtree = newSubtree;
     instanceDomMap.set(inst, newDom);
@@ -200,8 +217,8 @@ function runEffects(inst: ComponentInstance) {
 }
 
 export function getInstanceForDom(node: Node): ComponentInstance | null {
-  for (const [inst, dom] of (instanceDomMap as any).entries?.() || []) {
-    if (dom === node) return inst;
-  }
+  // WeakMap iteration isn't possible, but if we needed this feature 
+  // we would need to store the instance on the DOM node directly.
+  // For now, returning null as strictly per WeakMap limitations.
   return null;
 }

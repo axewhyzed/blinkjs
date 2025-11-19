@@ -2,25 +2,25 @@
 // BlinkJS - component.ts
 // Handles per-component state (hooks, lifecycle) and current render context.
 
-export type Hook = any;
+import { VNode, VChild } from './dom';
+import type { Signal } from './hooks/useSignal';
+
+export type Hook = unknown;
 
 export type ComponentInstance = {
   hooks: Hook[];
   hookIndex: number;
-  vnode?: any;             // wrapper VNode for this component (tag: compFn)
-  dom?: Node | null;       // root DOM node of this component's rendered subtree
+  vnode?: VNode;             // wrapper VNode for this component (tag: compFn)
+  dom?: Node | null;         // root DOM node of this component's rendered subtree
   mounted: boolean;
   dirty: boolean;
   effects: (() => void)[];
   cleanup: (() => void)[];
   name?: string;
-  signals: any[];
+  signals: Signal<unknown>[]; // Strictly typed signals list
 
   // --- new: for minimal reconciliation ---
-  subtree?: any;           // last rendered VChild returned from component (for patching)
-
-  // --- context carrier (used by Provider impl) ---
-  // no parent link required; we use global stacks in context.ts
+  subtree?: VChild;          // last rendered VChild returned from component (for patching)
 };
 
 // current component being rendered
@@ -45,7 +45,7 @@ export function createComponentInstance(name?: string): ComponentInstance {
   return {
     hooks: [],
     hookIndex: 0,
-    vnode: null,
+    vnode: undefined,
     dom: null,
     mounted: false,
     dirty: false,

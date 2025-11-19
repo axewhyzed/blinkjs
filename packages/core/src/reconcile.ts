@@ -1,11 +1,6 @@
+// packages/core/src/reconcile.ts
 // BlinkJS - reconcile.ts
 // Minimal DOM patching with optional keyed children diffing.
-// Strategy:
-// - If types differ → replace node
-// - Text ↔ Text → update data
-// - Element same tag → diff props, then children
-// - Children: if any key is present (and no fragments), use keyed diff; else sequential
-// - Fragment in children: fallback to sequential (keeps logic small & robust)
 
 import { VChild, VNode, isVNode, createDom, setProp, FragmentSymbol } from './dom';
 
@@ -13,8 +8,8 @@ function isTextLike(x: any): x is string | number {
   return typeof x === 'string' || typeof x === 'number';
 }
 
-function sameVNodeType(a: any, b: any): boolean {
-  if (!a || !b) return false;
+function sameVNodeType(a: VChild, b: VChild): boolean {
+  if (a === undefined || a === null || b === undefined || b === null) return false;
   if (isTextLike(a) || isTextLike(b)) return isTextLike(a) && isTextLike(b);
   if (!isVNode(a) || !isVNode(b)) return false;
   // Only handle native elements here; function components are already expanded by runtime.
@@ -51,7 +46,7 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
 
   // If types mismatch or either is Fragment → replace
   if (!sameVNodeType(oldVNode, newVNode)) {
-    const newDom = createDom(newVNode as any);
+    const newDom = createDom(newVNode);
     if (oldDom.parentNode) {
       oldDom.parentNode.replaceChild(newDom, oldDom);
     }
@@ -91,12 +86,12 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
   // Keyed diff only when no fragments (1:1 child ↔ DOM node mapping assumption)
   if (
     anyKey &&
-    !hasFragment(oldChildren as VChild[]) &&
-    !hasFragment(newChildren as VChild[])
+    !hasFragment(oldChildren) &&
+    !hasFragment(newChildren)
   ) {
-    patchChildrenKeyed(el, oldChildren as VChild[], newChildren as VChild[]);
+    patchChildrenKeyed(el, oldChildren, newChildren);
   } else {
-    patchChildrenSequential(el, oldChildren as VChild[], newChildren as VChild[]);
+    patchChildrenSequential(el, oldChildren, newChildren);
   }
 
   return el;
@@ -112,7 +107,7 @@ function patchChildrenSequential(el: Element, oldC: VChild[], newC: VChild[]) {
   // Patch shared prefix
   for (let i = 0; i < minLen; i++) {
     const childDom = childNodes[i];
-    const patched = patch(el, oldC[i] as any, newC[i] as any, childDom);
+    const patched = patch(el, oldC[i], newC[i], childDom);
     if (patched !== childDom) {
       if (el.childNodes[i] !== patched) {
         el.replaceChild(patched, childDom);
@@ -122,7 +117,7 @@ function patchChildrenSequential(el: Element, oldC: VChild[], newC: VChild[]) {
 
   // Append extras
   for (let i = minLen; i < newC.length; i++) {
-    el.appendChild(createDom(newC[i] as any));
+    el.appendChild(createDom(newC[i]));
   }
 
   // Remove leftovers
@@ -133,13 +128,7 @@ function patchChildrenSequential(el: Element, oldC: VChild[], newC: VChild[]) {
 }
 
 /**
- * Keyed child diff:
- * - Build map of old keyed children: key -> { vnode, dom, used }
- * - Iterate new children in order:
- *   - If key exists in map: patch + move into correct position
- *   - Else: create new node and insert at current cursor
- * - Remove any old keyed nodes not reused
- * - Unkeyed children get sequential treatment at their positions
+ * Keyed child diff
  */
 function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
   const oldNodes = Array.from(el.childNodes);
@@ -168,7 +157,7 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
       const entry = oldKeyMap.get(key);
       if (entry) {
         // Patch in place
-        const patchedDom = patch(el, entry.vnode as any, newChild as any, entry.dom);
+        const patchedDom = patch(el, entry.vnode, newChild, entry.dom);
         entry.used = true;
 
         // Move node to cursor position if needed
@@ -181,7 +170,7 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
         continue;
       } else {
         // New keyed node: create and insert
-        const newDom = createDom(newChild as any);
+        const newDom = createDom(newChild);
         el.insertBefore(newDom, refNode);
         cursor++;
         continue;
@@ -193,7 +182,7 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
     if (currentDom) {
       const oldVNode = oldC[cursor] as VChild | undefined;
       if (oldVNode !== undefined) {
-        const patchedDom = patch(el, oldVNode as any, newChild as any, currentDom);
+        const patchedDom = patch(el, oldVNode, newChild, currentDom);
         if (patchedDom !== currentDom) {
           el.insertBefore(patchedDom, currentDom);
           if (el.childNodes[cursor + 1]) {
@@ -201,12 +190,12 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
           }
         }
       } else {
-        const newDom = createDom(newChild as any);
+        const newDom = createDom(newChild);
         el.insertBefore(newDom, currentDom);
       }
     } else {
       // No DOM at cursor; just append
-      el.appendChild(createDom(newChild as any));
+      el.appendChild(createDom(newChild));
     }
     cursor++;
   }
