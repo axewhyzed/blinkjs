@@ -3,4 +3,4 @@ export { el, FragmentSymbol } from './internal/dom';
 export { mountApp, unmountApp } from './internal/runtime';
 export { useSignal } from './hooks/useSignal';
 export { onStart, onEnd, onChange } from './hooks/lifecycle';
-export { enableStrictMode } from './strict';
+export { enableStrictMode } from '../modules/strict';

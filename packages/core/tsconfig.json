@@ -6,12 +6,17 @@
     "declaration": true,
     "declarationDir": "dist",
     "outDir": "dist",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "jsx": "preserve",
     "jsxFactory": "jsx",
-    "baseUrl": "./src",
+    "baseUrl": ".",
+    "paths": {
+      "@engine/*": ["engine/*"],
+      "@modules/*": ["modules/*"]
+    },
     "lib": ["ES2020", "DOM"]
   },
-  "include": ["engine"]
+  "include": ["engine", "modules"]
 }
