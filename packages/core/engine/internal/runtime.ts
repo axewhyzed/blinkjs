@@ -1,5 +1,5 @@
 // packages/core/engine/internal/runtime.ts
-// Fixed: Component Instance Tracking & Update Logic for Reconciler
+// Fixed: Guard unmountComponentAtNode against undefined
 
 import { VNode, VChild, createDomInternal, FragmentSymbol, isVNode, applyProps, bindSignalToNode } from './dom';
 import { ComponentInstance, createComponentInstance, setCurrentComponent, resetHooks } from './component';
@@ -54,33 +54,32 @@ export function unmountApp(rootSelector: string | Element) {
   (rootEl as Element).innerHTML = '';
 }
 
-// --- Component Update Helper (Used by Reconcile) ---
+// FIX: Guard against undefined node
+export function unmountComponentAtNode(node: Node | null | undefined) {
+  if (!node) return;
+  const inst = (node as any).__blinkInstance;
+  if (inst) {
+    unmountInstance(inst);
+  }
+}
+
 export function updateComponentFromVNode(dom: Node, newVNode: VNode, context: Record<symbol, unknown>) {
   const inst = (dom as any).__blinkInstance as ComponentInstance;
-  if (!inst) {
-    // Should not happen if tree is healthy, but fallback to replace if lost
+  // Safety check: If instance is missing or tag mismatch, do full replace
+  if (!inst || inst.vnode?.tag !== newVNode.tag) {
     const newDom = renderVNode(newVNode, context);
     if (dom.parentNode) dom.parentNode.replaceChild(newDom, dom);
     return newDom;
   }
 
-  // Update props and context
-  // Note: Context usually propagates down, but if we are patching a child, 
-  // we assume it inherits the passed context.
-  // inst.context = Object.create(context); // Mutable update of context? 
-  // Better: Re-invoke component with new props.
-  
   const compFn = newVNode.tag as Function;
   const props = getPropsWithChildren(newVNode.props, newVNode.children);
   
   inst.vnode = newVNode;
   
-  // Re-run component
   const res = invokeComponentSafe(inst, compFn, props);
   
   if (res instanceof Promise) {
-      // Async update not fully supported in synchronous patch loop yet
-      // but we handle the promise result
      res.then(newSubtree => {
          if (!inst.mounted) return;
          if (inst.dom && inst.dom.parentNode) {
@@ -88,23 +87,25 @@ export function updateComponentFromVNode(dom: Node, newVNode: VNode, context: Re
             inst.dom = newDom;
             inst.subtree = newSubtree as VChild;
             instanceDomMap.set(inst, newDom);
-            (newDom as any).__blinkInstance = inst; // Ensure link persists
+            (newDom as any).__blinkInstance = inst;
          }
          runEffects(inst);
      });
-     return dom; // Return old dom until promise resolves
+     return dom;
   }
 
   const newSubtree = res as VChild;
-  const newDom = patch(inst.dom!.parentNode!, inst.subtree, newSubtree, inst.dom!, inst.context); // Recursive patch
-  
-  inst.dom = newDom;
-  inst.subtree = newSubtree;
-  instanceDomMap.set(inst, newDom);
-  (newDom as any).__blinkInstance = inst;
+  // Ensure we have a parent to patch against
+  if (inst.dom && inst.dom.parentNode) {
+      const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree, inst.dom, inst.context);
+      inst.dom = newDom;
+      inst.subtree = newSubtree;
+      instanceDomMap.set(inst, newDom);
+      (newDom as any).__blinkInstance = inst;
+  }
   
   runEffects(inst);
-  return newDom;
+  return inst.dom!;
 }
 
 
@@ -144,12 +145,11 @@ function invokeComponentSync(inst: ComponentInstance, compFn: Function, props: a
 }
 
 export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown> = {}, isSvg = false): Node {
-  if (vnode == null) return document.createTextNode('');
+  if (vnode == null || typeof vnode === 'boolean') return document.createTextNode('');
   if (typeof vnode === 'string' || typeof vnode === 'number') return document.createTextNode(String(vnode));
 
   if (!isVNode(vnode)) return createDomInternal(vnode, isSvg);
 
-  // 1. Component
   if (typeof vnode.tag === 'function') {
     const compFn = vnode.tag as Function;
     const inst = createComponentInstance((compFn as any).name, parentContext);
@@ -170,7 +170,7 @@ export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown
             }
             inst.dom = realDom;
             instanceDomMap.set(inst, realDom);
-            (realDom as any).__blinkInstance = inst; // Track Instance
+            (realDom as any).__blinkInstance = inst;
             runEffects(inst);
         });
         inst.dom = placeholder;
@@ -184,19 +184,17 @@ export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown
     inst.dom = childDom;
     inst.mounted = true;
     instanceDomMap.set(inst, childDom);
-    (childDom as any).__blinkInstance = inst; // Track Instance
+    (childDom as any).__blinkInstance = inst;
     runEffects(inst);
     return childDom;
   }
 
-  // 2. Fragment
   if (vnode.tag === FragmentSymbol) {
     const frag = document.createDocumentFragment();
     for (const c of vnode.children) frag.appendChild(renderVNode(c, parentContext, isSvg));
     return frag;
   }
 
-  // 3. Element
   if (String(vnode.tag).toLowerCase() === 'svg') isSvg = true;
   
   const el = isSvg 
@@ -220,7 +218,7 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
   if (!isVNode(vnode)) {
     const isSignal = vnode && typeof vnode === 'object' && 'value' in (vnode as any);
     const val = isSignal ? (vnode as any).value : vnode;
-    const strVal = String(val ?? '');
+    const strVal = (val === true || val === false || val == null) ? '' : String(val);
 
     if (node.nodeType === 3) {
        if (isSignal && 'subscribe' in (vnode as any)) bindSignalToNode(node, vnode as any);
@@ -312,7 +310,6 @@ export function rerenderComponent(inst: ComponentInstance) {
      res.then(newSubtree => {
          if (!inst.mounted) return;
          if (inst.dom && inst.dom.parentNode) {
-            // Pass inst.context to patch
             const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree as VChild, inst.dom, inst.context);
             inst.dom = newDom;
             inst.subtree = newSubtree as VChild;

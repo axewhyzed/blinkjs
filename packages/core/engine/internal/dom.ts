@@ -1,10 +1,10 @@
 // packages/core/engine/internal/dom.ts
-// BlinkJS - DOM utilities (Hardened)
+// Fixed: Handle booleans as empty nodes
 
 import { Signal } from '../hooks/useSignal';
 import { getCurrentComponentUnsafe } from './component';
 
-export type VChild = VNode | string | number | null | undefined;
+export type VChild = VNode | string | number | boolean | null | undefined;
 export type VNode = {
   tag: string | typeof FragmentSymbol | ComponentFn;
   props: Record<string, any> | null;
@@ -36,7 +36,7 @@ export function el(tag: string | typeof FragmentSymbol | ComponentFn, props?: Re
   return {
     tag,
     props: props || null,
-    children: children.flat(Infinity).filter(c => c != null)
+    children: children.flat(Infinity) // .filter(c => c != null) <- Remove filter to handle conditional rendering logic in runtime
   };
 }
 
@@ -48,17 +48,15 @@ export function createDom(vnode: VChild): Node {
   return createDomInternal(vnode, false);
 }
 
-// Internal helper
 export function createDomInternal(vnode: VChild, isSvg: boolean): Node {
-  if (vnode == null) return textNode('');
+  // FIX: Handle boolean (true/false) as empty text
+  if (vnode == null || typeof vnode === 'boolean') return textNode('');
+  
   if (typeof vnode === 'string' || typeof vnode === 'number') return textNode(vnode);
   if (isSignal(vnode)) return createSignalNode(vnode);
 
-  // HARDENING FIX:
-  // If we get here, it SHOULD be a VNode. If it's not (e.g. a plain object),
-  // we must treat it as text to prevent a crash.
   if (!isVNode(vnode)) {
-    // Fallback for unknown objects (e.g. Date, {}): render string representation
+    // Fallback for unknown objects
     return textNode(String(vnode));
   }
 
@@ -67,7 +65,6 @@ export function createDomInternal(vnode: VChild, isSvg: boolean): Node {
   
   if (v.tag === FragmentSymbol) {
     const frag = document.createDocumentFragment();
-    // Safe access now guaranteed by isVNode check above
     for (const child of v.children) frag.appendChild(createDomInternal(child, isSvg));
     return frag;
   }
@@ -93,7 +90,9 @@ function createSignalNode(signal: Signal<any>): Node {
 
 export function bindSignalToNode(node: Node, signal: Signal<any>) {
   const update = () => {
-    const newVal = String(signal.value);
+    const val = signal.value;
+    // Handle boolean signals in text
+    const newVal = (val === true || val === false || val == null) ? '' : String(val);
     if (node.nodeType === 3 && node.textContent !== newVal) {
         node.textContent = newVal;
     }
@@ -112,8 +111,9 @@ function appendChild(parent: Node, child: any, isSvg: boolean): void {
     parent.appendChild(createSignalNode(child));
   } else if (isVNode(child)) {
     parent.appendChild(createDomInternal(child, isSvg));
-  } else if (child != null) {
-    parent.appendChild(textNode(child)); // Fallback for strings/numbers/objects
+  } else {
+    // Primitives (string, number, boolean, null)
+    parent.appendChild(createDomInternal(child, isSvg));
   }
 }
 

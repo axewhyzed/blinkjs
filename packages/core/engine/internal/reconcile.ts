@@ -1,15 +1,19 @@
 // packages/core/engine/internal/reconcile.ts
-// Fixed: Component-Aware Reconciliation with Context
+// Fixed: Guard against undefined DOM nodes (Desync Protection)
 
 import { VChild, VNode, isVNode, createDom, setProp, FragmentSymbol } from './dom';
-import { renderVNode, updateComponentFromVNode } from './runtime';
+import { renderVNode, updateComponentFromVNode, unmountComponentAtNode } from './runtime';
 
 function isTextLike(x: any): x is string | number {
   return typeof x === 'string' || typeof x === 'number';
 }
 
 function sameVNodeType(a: VChild, b: VChild): boolean {
-  if (a === undefined || a === null || b === undefined || b === null) return false;
+  const isAEmpty = a == null || typeof a === 'boolean';
+  const isBEmpty = b == null || typeof b === 'boolean';
+  if (isAEmpty && isBEmpty) return true;
+  if (isAEmpty || isBEmpty) return false;
+
   if (isTextLike(a) || isTextLike(b)) return isTextLike(a) && isTextLike(b);
   if (!isVNode(a) || !isVNode(b)) return false;
   return a.tag === b.tag && a.tag !== FragmentSymbol;
@@ -40,10 +44,16 @@ function flattenChildren(children: VChild[]): VChild[] {
   return out;
 }
 
-// FIX: Added 'context' argument
 export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: Node, context: Record<symbol, unknown> = {}): Node {
-  if (oldVNode == null) oldVNode = '';
-  if (newVNode == null) newVNode = '';
+  if (oldVNode == null || typeof oldVNode === 'boolean') oldVNode = '';
+  if (newVNode == null || typeof newVNode === 'boolean') newVNode = '';
+
+  // FIX: If oldDom is missing (desync), treat as insert
+  if (!oldDom) {
+     const newDom = renderVNode(newVNode, context);
+     parent.appendChild(newDom);
+     return newDom;
+  }
 
   if (isTextLike(oldVNode) && isTextLike(newVNode)) {
     if (String(oldVNode) !== String(newVNode)) {
@@ -53,7 +63,8 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
   }
 
   if (!sameVNodeType(oldVNode, newVNode)) {
-    // FIX: Use renderVNode for replacement (supports Components)
+    unmountComponentAtNode(oldDom);
+    
     const newDom = renderVNode(newVNode, context);
     if (oldDom.parentNode) {
       oldDom.parentNode.replaceChild(newDom, oldDom);
@@ -61,16 +72,13 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
     return newDom;
   }
 
-  // Handle Components
   const oldV = oldVNode as VNode;
   const newV = newVNode as VNode;
   
   if (typeof newV.tag === 'function') {
-      // Delegate component update to runtime
       return updateComponentFromVNode(oldDom, newV, context);
   }
 
-  // Handle Elements
   const el = oldDom as Element;
 
   const oldProps = oldV.props || {};
@@ -88,7 +96,6 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
 
   const anyKey = oldChildren.some(c => getKey(c) != null) || newChildren.some(c => getKey(c) != null);
 
-  // Pass context down to children
   if (anyKey) {
     patchChildrenKeyed(el, oldChildren, newChildren, context);
   } else {
@@ -104,18 +111,26 @@ function patchChildrenSequential(el: Element, oldC: VChild[], newC: VChild[], co
 
   for (let i = 0; i < minLen; i++) {
     const childDom = childNodes[i];
-    // Pass context
-    const patched = patch(el, oldC[i], newC[i], childDom, context);
+    // FIX: Guard against undefined childDom if DOM is shorter than VDOM
+    if (childDom) {
+        patch(el, oldC[i], newC[i], childDom, context);
+    } else {
+        // Desync fallback: just append
+        el.appendChild(renderVNode(newC[i], context));
+    }
   }
 
   for (let i = minLen; i < newC.length; i++) {
-    // Pass context
     el.appendChild(renderVNode(newC[i], context));
   }
 
   for (let i = childNodes.length - 1; i >= newC.length; i--) {
     const n = childNodes[i];
-    el.removeChild(n);
+    // FIX: Guard
+    if (n) {
+        unmountComponentAtNode(n);
+        el.removeChild(n);
+    }
   }
 }
 
@@ -160,6 +175,7 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[], context
         const patched = patch(el, oldVNode, newChild, currentDom, context);
         if (patched !== currentDom) {
             el.insertBefore(patched, currentDom);
+            unmountComponentAtNode(currentDom);
             if (currentDom.parentNode === el) el.removeChild(currentDom);
         }
       } else {
@@ -173,11 +189,17 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[], context
 
   for (const [, entry] of oldKeyMap) {
     if (!entry.used && entry.dom.parentNode === el) {
+      unmountComponentAtNode(entry.dom);
       el.removeChild(entry.dom);
     }
   }
   
   while (el.childNodes.length > cursor) {
-    el.removeChild(el.lastChild!);
+    const n = el.lastChild;
+    // FIX: Guard
+    if (n) {
+        unmountComponentAtNode(n);
+        el.removeChild(n);
+    }
   }
 }
