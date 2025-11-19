@@ -1,26 +1,30 @@
 // packages/core/src/hooks/useSignal.ts
-// BlinkJS - Reactive signals & Computed values
+// BlinkJS - Reactive signals & Computed values (Fixed Leak)
 
 import { getCurrentComponent } from '../component';
 import { scheduleUpdate } from '../batcher';
+import { onEnd } from './lifecycle';
 
 // ---- Dependency Tracking System ----
-let activeSubscriber: (() => void) | null = null;
+type TrackingContext = {
+  subscriber: () => void;
+  sources: Set<Signal<any>>;
+};
+
+let activeContext: TrackingContext | null = null;
 
 export interface Signal<T> {
   value: T;
   subscribe?: (fn: () => void) => () => void;
-  peek?: () => T; // Read without subscribing
+  peek?: () => T;
+  // Internal: used to remove subscribers
+  _removeSubscriber?: (fn: () => void) => void;
 }
 
-/**
- * useSignal<T>(initialValue)
- * Returns a reactive signal.
- */
 export function useSignal<T>(initialValue: T): Signal<T> {
   const inst = getCurrentComponent();
-
   const idx = inst.hookIndex++;
+  
   if (inst.signals[idx]) {
     return inst.signals[idx] as Signal<T>;
   }
@@ -30,39 +34,32 @@ export function useSignal<T>(initialValue: T): Signal<T> {
 
   const signal: Signal<T> = {
     get value() {
-      // Dependency Tracking: If a computed/effect is running, register it.
-      if (activeSubscriber) {
-        subscribers.add(activeSubscriber);
+      if (activeContext) {
+        // 1. Register the subscriber (the computed function) to this signal
+        subscribers.add(activeContext.subscriber);
+        // 2. Register this signal to the context (so computed knows what to clean up)
+        activeContext.sources.add(signal);
       }
       return _val;
     },
     set value(newVal: T) {
       if (_val !== newVal) {
         _val = newVal;
-        
-        // 1. Schedule Component Update
         scheduleUpdate(inst);
-        
-        // 2. Notify Subscribers (Direct DOM bindings & Computed values)
-        // Snapshot to avoid infinite loops if a subscriber triggers another update
-        const runParams = Array.from(subscribers);
-        runParams.forEach(fn => {
-          try {
-            fn();
-          } catch (e) {
-            console.error('[BlinkJS] signal subscriber error:', e);
-          }
+        Array.from(subscribers).forEach(fn => {
+          try { fn(); } catch (e) { console.error(e); }
         });
       }
     },
     subscribe(fn: () => void) {
       subscribers.add(fn);
-      return () => {
-        subscribers.delete(fn);
-      };
+      return () => subscribers.delete(fn);
     },
     peek() {
       return _val;
+    },
+    _removeSubscriber(fn: () => void) {
+      subscribers.delete(fn);
     }
   };
 
@@ -70,59 +67,60 @@ export function useSignal<T>(initialValue: T): Signal<T> {
   return signal;
 }
 
-/**
- * useComputed<T>(fn)
- * Returns a read-only signal that automatically updates when dependencies change.
- */
 export function useComputed<T>(computeFn: () => T): Signal<T> {
-  // We use a signal to hold the computed result
   const s = useSignal<T>(undefined as any);
+  // useSignal increments the hook index, so we access the SAME signal object via s.
+  // We need to attach state to it to persist across renders.
+  const sigObj = s as any;
+
+  if (!sigObj._computedState) {
+    sigObj._computedState = {
+      sources: new Set<Signal<any>>(),
+      runner: null as (() => void) | null
+    };
+    
+    // Register Cleanup ONCE on mount to prevent leaks
+    onEnd(() => {
+      const state = sigObj._computedState;
+      if (state && state.runner) {
+        state.sources.forEach((src: Signal<any>) => src._removeSubscriber?.(state.runner!));
+        state.sources.clear();
+      }
+    });
+  }
   
-  // Use a flag to run initial computation only once per hook slot
-  const inst = getCurrentComponent();
-  // Hook index was incremented by useSignal above, so we check the "extra" state
-  // actually, useSignal takes a slot. We need to run the effect.
-  // To avoid complex hook index math, we'll just run the computation if value is undefined 
-  // (assuming undefined isn't a valid computed result, or we track 'initialized' separately).
-  // Better: use the lifecycle to run the computation.
-  
-  // BUT: Computed needs to run *now* so it's available for render.
-  
+  const state = sigObj._computedState;
+
   const runComputation = () => {
-    const prev = activeSubscriber;
-    activeSubscriber = runComputation; // Register this function as the dependency
+    // 1. Cleanup previous dependencies to avoid stale subscriptions
+    if (state.runner) {
+        state.sources.forEach((src: Signal<any>) => src._removeSubscriber?.(state.runner!));
+        state.sources.clear();
+    }
+    
+    // 2. Setup new context
+    const prevContext = activeContext;
+    state.runner = runComputation; // Ensure reference consistency
+    activeContext = {
+      subscriber: state.runner,
+      sources: state.sources
+    };
+
     try {
       const newVal = computeFn();
       if (s.peek && s.peek() !== newVal) {
         s.value = newVal;
       }
     } finally {
-      activeSubscriber = prev;
+      activeContext = prevContext;
     }
   };
 
-  // Run once immediately if we haven't initialized (or we can rely on lazy eval, 
-  // but push-based is easier for this architecture).
-  // We need a way to know if this is the *first* render of this computed.
-  // We can check if 'subscribers' in the underlying signal has us? No.
-  // Let's just run it if it's the first time creation (value is undefined sentinel).
-  
-  // Note: In strict React/BlinkJS, hooks run every render. 
-  // We only want to set up the tracking once? 
-  // No, we need to re-track if dependencies change? 
-  // Actually, with this 'activeSubscriber' model, if A changes, it calls runComputation.
-  // runComputation re-executes fn(), which re-reads A (re-subscribing).
-  
-  // We need to trigger the first run.
-  // We can check a hidden property on the signal object or just rely on a closure variable 
-  // stored in a Ref-like structure?
-  // BlinkJS useSignal persists the object. We can attach a property to it.
-  
-  const sigObj = s as any;
-  if (!sigObj._computedInit) {
-    sigObj._computedInit = true;
+  // Initial run (idempotent check)
+  if (!sigObj._initialized) {
+    sigObj._initialized = true;
     runComputation();
   }
-  
+
   return s;
 }
