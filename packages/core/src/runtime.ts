@@ -1,6 +1,6 @@
 // packages/core/src/runtime.ts
 // BlinkJS - runtime.ts
-// Hydration + Context Propagation + Type Safety
+// Hydration + Context Propagation + Type Safety + Robustness
 
 import { VNode, VChild, createDom, FragmentSymbol, isVNode, applyProps, bindSignalToNode } from './dom';
 import { ComponentInstance, createComponentInstance, setCurrentComponent, resetHooks } from './component';
@@ -74,7 +74,6 @@ export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown
   if (vnode == null) return document.createTextNode('');
   if (typeof vnode === 'string' || typeof vnode === 'number') return document.createTextNode(String(vnode));
 
-  // If it's not a VNode, it might be a Signal or unknown (fallback to createDom)
   if (!isVNode(vnode)) {
     return createDom(vnode);
   }
@@ -111,14 +110,22 @@ export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown
   return el;
 }
 
+// Helper: Find next non-whitespace sibling
+function getNextSibling(node: Node | null): Node | null {
+  let current = node;
+  while (current && current.nodeType === 3 && !current.textContent?.trim()) {
+    current = current.nextSibling;
+  }
+  return current;
+}
+
 function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, unknown>): Node {
-  // Handle Primitives (String/Number/Signal-like)
+  // Handle Primitives
   if (!isVNode(vnode)) {
     const isSignal = vnode && typeof vnode === 'object' && 'value' in (vnode as any);
     const val = isSignal ? (vnode as any).value : vnode;
     const strVal = String(val ?? '');
 
-    // If the DOM node is text, update/bind it
     if (node.nodeType === 3) {
        if (isSignal && 'subscribe' in (vnode as any)) {
           bindSignalToNode(node, vnode as any);
@@ -126,7 +133,6 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
        if (node.textContent !== strVal) node.textContent = strVal;
        return node;
     }
-    // Mismatch: replace
     const newNode = renderVNode(vnode, parentContext);
     node.parentNode?.replaceChild(newNode, node);
     return newNode;
@@ -140,7 +146,6 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
     const childVNode = invokeComponent(inst, compFn, vnode.props || {});
     inst.subtree = childVNode;
     
-    // Recurse hydration on the same node (components don't introduce a wrapper DOM node themselves)
     const hydratedDom = hydrateVNode(node, childVNode, inst.context);
     inst.dom = hydratedDom;
     inst.mounted = true;
@@ -154,8 +159,7 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
      let sibling: Node | null = node;
      for (const child of vnode.children) {
          if (sibling) {
-             // Fix: Explicit type annotation prevents cyclic inference error (TS 7022)
-             const next: Node | null = sibling.nextSibling;
+             const next: Node | null = getNextSibling(sibling.nextSibling);
              hydrateVNode(sibling, child, parentContext);
              sibling = next;
          }
@@ -167,11 +171,10 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
   if (node.nodeType === 1 && (node as Element).tagName.toLowerCase() === String(vnode.tag).toLowerCase()) {
       if (vnode.props) applyProps(node as Element, vnode.props);
       
-      let domChild: Node | null = node.firstChild;
+      let domChild: Node | null = getNextSibling(node.firstChild);
       for (const vChild of vnode.children) {
           if (domChild) {
-              // Fix: Explicit type annotation here as well
-              const next: Node | null = domChild.nextSibling;
+              const next: Node | null = getNextSibling(domChild.nextSibling);
               hydrateVNode(domChild, vChild, parentContext);
               domChild = next;
           } else {
@@ -181,7 +184,6 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
       return node;
   }
 
-  // Tag mismatch fallback
   const newNode = renderVNode(vnode, parentContext);
   node.parentNode?.replaceChild(newNode, node);
   return newNode;

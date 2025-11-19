@@ -1,133 +1,130 @@
 // BlinkJS - router.ts
-// Minimal SPA router with params (:id), query parsing, and 404 fallback (*)
+// Component-based Router
 
-import { mountApp, unmountApp } from './runtime';
+import { useSignal, Signal } from './hooks/useSignal';
+import { onStart, onEnd } from './hooks/lifecycle';
+import { el } from './dom';
 
-type Route = {
-  path: string;           // e.g. '/', '/users/:id', or '*' for fallback
-  component: Function;    // component invoked with { params, query }
+type RouteDef = {
+  path: string;
+  component: Function;
 };
 
 type CompiledRoute = {
-  original: Route;
+  original: RouteDef;
   regex: RegExp;
-  keys: string[];         // param names in order
-  isFallback: boolean;    // path === '*'
+  keys: string[];
+  isFallback: boolean;
 };
 
-let compiled: CompiledRoute[] = [];
-let rootSelector: string | Element;
+// Global config (shared across Router instances)
+let routesConfig: CompiledRoute[] = [];
 
 /**
- * defineRoutes([
- *   { path: '/', component: Home },
- *   { path: '/post/:id', component: Post },
- *   { path: '*', component: NotFound }   // optional fallback
- * ], '#app')
+ * Define routes for the application.
+ * Does NOT mount the app anymore. Use <Router /> in your main App component.
  */
-export function defineRoutes(routeDefs: Route[], root: string | Element) {
-  rootSelector = root;
-  compiled = routeDefs.map(compileRoute);
+export function defineRoutes(defs: RouteDef[]) {
+  routesConfig = defs.map(compileRoute);
+}
 
-  // Handle browser nav
-  window.addEventListener('popstate', () => {
-    navigateTo(getPath(), false);
+/**
+ * <Router /> Component
+ * Renders the current matched route component.
+ */
+export function Router() {
+  const currentPath = useSignal(window.location.pathname + window.location.search);
+  const paramsSignal = useSignal<Record<string, string>>({});
+  const querySignal = useSignal<Record<string, string>>({});
+
+  // Listen to history events
+  onStart(() => {
+    const onPop = () => {
+      currentPath.value = window.location.pathname + window.location.search;
+    };
+    window.addEventListener('popstate', onPop);
+    
+    // Custom event for pushState/replaceState
+    const onPush = () => {
+       currentPath.value = window.location.pathname + window.location.search;
+    };
+    window.addEventListener('blink:route-change', onPush);
+
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      window.removeEventListener('blink:route-change', onPush);
+    };
   });
 
-  // Initial navigation
-  navigateTo(getPath(), false);
-}
-
-/**
- * Programmatic navigation
- * push = true for history.pushState, false for replaceState
- */
-export function navigateTo(path: string, push = true) {
-  const { pathname, search } = splitPath(path);
-  const match = matchRoute(pathname);
-
-  const query = parseQuery(search);
-
-  if (!match) {
-    const fallback = compiled.find(c => c.isFallback);
-    if (!fallback) {
-      console.warn(`[BlinkJS Router] No route matched and no '*' fallback: ${pathname}`);
-      return;
-    }
-    mountRoute(fallback, {}, query, push ? 'push' : 'replace', pathname, search);
-    return;
+  // Match logic
+  // We use a derived value logic here inside render
+  const match = matchRoute(currentPath.value);
+  
+  if (match) {
+    // Update param signals if they changed (deep check omitted for speed)
+    paramsSignal.value = match.params;
+    querySignal.value = parseQuery(currentPath.value.split('?')[1] || '');
+    
+    // Render the Route Component
+    // We pass signals or values? 
+    // Passing values is React-like. Passing signals is Solid-like.
+    // Let's pass values to be compatible with standard components.
+    const Comp = match.route.original.component;
+    return el(Comp as any, { params: match.params, query: querySignal.value });
   }
 
-  mountRoute(match.route, match.params, query, push ? 'push' : 'replace', pathname, search);
+  return el('div', null, '404 Not Found');
 }
 
 /**
- * SPA link helper: <a href="/x" onclick={link}>X</a>
+ * Navigate programmatically
+ */
+export function navigateTo(path: string, replace = false) {
+  if (replace) {
+    history.replaceState(null, '', path);
+  } else {
+    history.pushState(null, '', path);
+  }
+  window.dispatchEvent(new Event('blink:route-change'));
+}
+
+/**
+ * Link helper
  */
 export function link(event: MouseEvent) {
   const target = event.currentTarget as HTMLAnchorElement | null;
   if (!target) return;
-
   const href = target.getAttribute('href');
   if (!href) return;
-
-  // Respect new tab/middle click/modifiers
-  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
-    return;
-  }
-
+  
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+  
   event.preventDefault();
   navigateTo(href);
 }
 
-/* ---------------- internal helpers ---------------- */
+// --- Internals ---
 
-function getPath() {
-  return window.location.pathname + window.location.search;
-}
-
-function splitPath(path: string): { pathname: string; search: string } {
-  const qIdx = path.indexOf('?');
-  return qIdx === -1
-    ? { pathname: path, search: '' }
-    : { pathname: path.slice(0, qIdx), search: path.slice(qIdx) };
-}
-
-function parseQuery(search: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!search || search[0] !== '?') return out;
-  const usp = new URLSearchParams(search);
-  usp.forEach((v, k) => {
-    out[k] = v;
-  });
-  return out;
-}
-
-function compileRoute(route: Route): CompiledRoute {
+function compileRoute(route: RouteDef): CompiledRoute {
   if (route.path === '*') {
     return { original: route, regex: /.^/, keys: [], isFallback: true };
   }
-
   const keys: string[] = [];
-  // Convert '/users/:id' -> /^\/users\/([^/]+)$/
   const pattern = route.path
-    .replace(/\/+$/, '') // trim trailing slash (except root)
+    .replace(/\/+$/, '')
     .replace(/:(\w+)/g, (_, k) => {
       keys.push(k);
       return '([^/]+)';
     });
-
   const source = '^' + (pattern === '' ? '/' : pattern) + '$';
-  const regex = new RegExp(source);
-
-  return { original: route, regex, keys, isFallback: false };
+  return { original: route, regex: new RegExp(source), keys, isFallback: false };
 }
 
-function matchRoute(pathname: string): { route: CompiledRoute; params: Record<string, string> } | null {
-  // normalize: remove trailing slash except root
+function matchRoute(fullPath: string) {
+  const pathname = fullPath.split('?')[0];
   const path = pathname !== '/' ? pathname.replace(/\/+$/, '') : '/';
 
-  for (const cr of compiled) {
+  for (const cr of routesConfig) {
     if (cr.isFallback) continue;
     const m = cr.regex.exec(path);
     if (!m) continue;
@@ -138,28 +135,14 @@ function matchRoute(pathname: string): { route: CompiledRoute; params: Record<st
     }
     return { route: cr, params };
   }
-  return null;
+  
+  const fallback = routesConfig.find(c => c.isFallback);
+  return fallback ? { route: fallback, params: {} } : null;
 }
 
-function mountRoute(
-  route: CompiledRoute | { original: Route },
-  params: Record<string, string>,
-  query: Record<string, string>,
-  nav: 'push' | 'replace',
-  pathname: string,
-  search: string
-) {
-  // Unmount previous and mount wrapped component with route props.
-  unmountApp(rootSelector);
-
-  const Comp = route.original.component;
-  const Wrapped = () => (Comp as any)({ params, query });
-
-  mountApp(rootSelector, Wrapped);
-
-  if (nav === 'push') {
-    history.pushState({}, '', pathname + (search || ''));
-  } else {
-    history.replaceState({}, '', pathname + (search || ''));
-  }
+function parseQuery(queryString: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!queryString) return out;
+  new URLSearchParams(queryString).forEach((v, k) => out[k] = v);
+  return out;
 }
