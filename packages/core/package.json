@@ -1,0 +1,48 @@
+{
+  "name": "blinkjs",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./core": "./dist/core.js",
+    "./router": "./dist/router.entry.js",
+    "./context": "./dist/context.entry.js",
+    "./portal": "./dist/portal.entry.js",
+    "./jsx": "./dist/jsx.entry.js",
+    "./ssr": "./dist/ssr.entry.js",
+    "./disposal": "./dist/disposal.entry.js"
+  },
+  "typesVersions": {
+    "*": {
+      "core": [
+        "dist/core.d.ts"
+      ],
+      "router": [
+        "dist/router.entry.d.ts"
+      ],
+      "context": [
+        "dist/context.entry.d.ts"
+      ],
+      "portal": [
+        "dist/portal.entry.d.ts"
+      ],
+      "jsx": [
+        "dist/jsx.entry.d.ts"
+      ],
+      "ssr": [
+        "dist/ssr.entry.d.ts"
+      ],
+      "disposal": [
+        "dist/disposal.entry.d.ts"
+      ]
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
