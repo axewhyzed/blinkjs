@@ -1,8 +1,13 @@
 {
-  "name": "blinkjs",
-  "version": "0.1.0",
+  "name": "@axewhyzed/blink-js",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "The Micro-Framework that thinks it's a Big Framework.",
   "main": "dist/engine/index.js",
   "types": "dist/engine/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": "./dist/engine/index.js",
     "./core": "./dist/engine/core.js",

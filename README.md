@@ -23,7 +23,7 @@ BlinkJS is a lightweight (3KB) JavaScript framework that combines the **Virtual 
 ## 📦 Installation
 
 ```bash
-npm install blinkjs
+npm install @axewhyzed/blink-js
 ````
 
 -----
