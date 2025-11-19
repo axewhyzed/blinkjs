@@ -1,6 +1,5 @@
 // packages/core/src/reconcile.ts
 // BlinkJS - reconcile.ts
-// Minimal DOM patching with optional keyed children diffing.
 
 import { VChild, VNode, isVNode, createDom, setProp, FragmentSymbol } from './dom';
 
@@ -12,15 +11,7 @@ function sameVNodeType(a: VChild, b: VChild): boolean {
   if (a === undefined || a === null || b === undefined || b === null) return false;
   if (isTextLike(a) || isTextLike(b)) return isTextLike(a) && isTextLike(b);
   if (!isVNode(a) || !isVNode(b)) return false;
-  // Only handle native elements here; function components are already expanded by runtime.
   return a.tag === b.tag && a.tag !== FragmentSymbol;
-}
-
-function hasFragment(children: VChild[]): boolean {
-  for (const c of children) {
-    if (isVNode(c) && c.tag === FragmentSymbol) return true;
-  }
-  return false;
 }
 
 function getKey(v: VChild): any | null {
@@ -28,15 +19,27 @@ function getKey(v: VChild): any | null {
 }
 
 /**
- * Patch oldVNode → newVNode in place under parent, using oldDom as the current node.
- * Returns the DOM node representing newVNode.
+ * Fix B: Flatten fragments to allow keys to bubble up for diffing.
  */
+function flattenChildren(children: VChild[]): VChild[] {
+  const out: VChild[] = [];
+  for (const c of children) {
+    if (isVNode(c) && c.tag === FragmentSymbol) {
+      out.push(...flattenChildren(c.children));
+    } else if (Array.isArray(c)) {
+        // Handle accidental nested arrays
+        out.push(...flattenChildren(c));
+    } else {
+      out.push(c);
+    }
+  }
+  return out;
+}
+
 export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: Node): Node {
-  // Handle null/undefined uniformly as empty text.
   if (oldVNode == null) oldVNode = '';
   if (newVNode == null) newVNode = '';
 
-  // Text ↔ Text fast path
   if (isTextLike(oldVNode) && isTextLike(newVNode)) {
     if (String(oldVNode) !== String(newVNode)) {
       (oldDom as Text).data = String(newVNode);
@@ -44,7 +47,6 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
     return oldDom;
   }
 
-  // If types mismatch or either is Fragment → replace
   if (!sameVNodeType(oldVNode, newVNode)) {
     const newDom = createDom(newVNode);
     if (oldDom.parentNode) {
@@ -53,42 +55,27 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
     return newDom;
   }
 
-  // Same element tag: diff props then children
   const oldV = oldVNode as VNode;
   const newV = newVNode as VNode;
-
   const el = oldDom as Element;
 
-  // Props diff: set/update new, remove old not present
   const oldProps = oldV.props || {};
   const newProps = newV.props || {};
-  // Set/update
+  
   for (const [k, v] of Object.entries(newProps)) {
-    const ov = (oldProps as any)[k];
-    if (ov !== v) {
-      setProp(el, k, v);
-    }
+    if ((oldProps as any)[k] !== v) setProp(el, k, v);
   }
-  // Remove
   for (const k of Object.keys(oldProps)) {
-    if (!(k in newProps)) {
-      setProp(el, k, undefined);
-    }
+    if (!(k in newProps)) setProp(el, k, undefined);
   }
 
-  // Children diff
-  const oldChildren = oldV.children || [];
-  const newChildren = newV.children || [];
+  // Fix B: Flatten children before diffing
+  const oldChildren = flattenChildren(oldV.children || []);
+  const newChildren = flattenChildren(newV.children || []);
 
-  const anyKey =
-    oldChildren.some(c => getKey(c) != null) || newChildren.some(c => getKey(c) != null);
+  const anyKey = oldChildren.some(c => getKey(c) != null) || newChildren.some(c => getKey(c) != null);
 
-  // Keyed diff only when no fragments (1:1 child ↔ DOM node mapping assumption)
-  if (
-    anyKey &&
-    !hasFragment(oldChildren) &&
-    !hasFragment(newChildren)
-  ) {
+  if (anyKey) {
     patchChildrenKeyed(el, oldChildren, newChildren);
   } else {
     patchChildrenSequential(el, oldChildren, newChildren);
@@ -97,46 +84,36 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
   return el;
 }
 
-/**
- * Sequential child diff (no keys): patch min(len), append extras, remove leftovers.
- */
 function patchChildrenSequential(el: Element, oldC: VChild[], newC: VChild[]) {
   const childNodes = Array.from(el.childNodes);
   const minLen = Math.min(oldC.length, newC.length);
 
-  // Patch shared prefix
   for (let i = 0; i < minLen; i++) {
     const childDom = childNodes[i];
     const patched = patch(el, oldC[i], newC[i], childDom);
-    if (patched !== childDom) {
-      if (el.childNodes[i] !== patched) {
-        el.replaceChild(patched, childDom);
-      }
+    // If patch replaced the node, ensure we don't lose track
+    if (patched !== childDom && el.childNodes[i] !== patched) {
+        // Should already be handled by patch's replaceChild, 
+        // but logic here safeguards strict sequential order.
     }
   }
 
-  // Append extras
   for (let i = minLen; i < newC.length; i++) {
     el.appendChild(createDom(newC[i]));
   }
 
-  // Remove leftovers
   for (let i = childNodes.length - 1; i >= newC.length; i--) {
     const n = childNodes[i];
     el.removeChild(n);
   }
 }
 
-/**
- * Keyed child diff
- */
 function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
   const oldNodes = Array.from(el.childNodes);
-
   type Entry = { vnode: VChild; dom: Node; used: boolean };
   const oldKeyMap = new Map<any, Entry>();
 
-  // Build key map from old children (only those with keys)
+  // Index old nodes
   for (let i = 0, domIdx = 0; i < oldC.length && domIdx < oldNodes.length; i++, domIdx++) {
     const k = getKey(oldC[i]);
     if (k != null) {
@@ -144,32 +121,21 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
     }
   }
 
-  // Cursor for insertion point
   let cursor = 0;
-
   for (let i = 0; i < newC.length; i++) {
     const newChild = newC[i];
     const key = getKey(newChild);
-
     const refNode = el.childNodes[cursor] || null;
 
     if (key != null) {
       const entry = oldKeyMap.get(key);
       if (entry) {
-        // Patch in place
         const patchedDom = patch(el, entry.vnode, newChild, entry.dom);
         entry.used = true;
-
-        // Move node to cursor position if needed
-        if (patchedDom !== refNode) {
-          el.insertBefore(patchedDom, refNode);
-        }
-
-        // Advance cursor
+        if (patchedDom !== refNode) el.insertBefore(patchedDom, refNode);
         cursor++;
         continue;
       } else {
-        // New keyed node: create and insert
         const newDom = createDom(newChild);
         el.insertBefore(newDom, refNode);
         cursor++;
@@ -177,40 +143,37 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
       }
     }
 
-    // Unkeyed child in a keyed list: try to reuse current DOM node sequentially
+    // Unkeyed fallback
     const currentDom = el.childNodes[cursor] || null;
     if (currentDom) {
-      const oldVNode = oldC[cursor] as VChild | undefined;
+      const oldVNode = oldC[cursor];
       if (oldVNode !== undefined) {
-        const patchedDom = patch(el, oldVNode, newChild, currentDom);
-        if (patchedDom !== currentDom) {
-          el.insertBefore(patchedDom, currentDom);
-          if (el.childNodes[cursor + 1]) {
-            el.removeChild(currentDom);
-          }
+        // Patch existing
+        const patched = patch(el, oldVNode, newChild, currentDom);
+        if (patched !== currentDom) {
+            el.insertBefore(patched, currentDom);
+            // If we inserted a new node, the old one (currentDom) is pushed. 
+            // We should remove it if we replaced it logically.
+            if (currentDom.parentNode === el) el.removeChild(currentDom);
         }
       } else {
-        const newDom = createDom(newChild);
-        el.insertBefore(newDom, currentDom);
+        el.insertBefore(createDom(newChild), currentDom);
       }
     } else {
-      // No DOM at cursor; just append
       el.appendChild(createDom(newChild));
     }
     cursor++;
   }
 
-  // Remove any old keyed nodes not reused
-  for (const [k, entry] of oldKeyMap.entries()) {
-    if (!entry.used) {
-      if (entry.dom.parentNode === el) {
-        el.removeChild(entry.dom);
-      }
+  // Cleanup unused keyed nodes
+  for (const [, entry] of oldKeyMap) {
+    if (!entry.used && entry.dom.parentNode === el) {
+      el.removeChild(entry.dom);
     }
   }
-
-  // If there are extra old unkeyed nodes beyond the new length, remove them
-  while (el.childNodes.length > newC.length) {
-    el.removeChild(el.lastChild as ChildNode);
+  
+  // Cleanup extra unkeyed nodes
+  while (el.childNodes.length > cursor) {
+    el.removeChild(el.lastChild!);
   }
 }

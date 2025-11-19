@@ -10,20 +10,22 @@ export type Hook = unknown;
 export type ComponentInstance = {
   hooks: Hook[];
   hookIndex: number;
-  vnode?: VNode;             // wrapper VNode for this component (tag: compFn)
-  dom?: Node | null;         // root DOM node of this component's rendered subtree
+  vnode?: VNode;             // wrapper VNode for this component
+  dom?: Node | null;         // root DOM node of rendered subtree
   mounted: boolean;
   dirty: boolean;
   effects: (() => void)[];
   cleanup: (() => void)[];
   name?: string;
-  signals: Signal<unknown>[]; // Strictly typed signals list
+  signals: Signal<unknown>[];
+  
+  // Fix C: Context moved to instance (Inheritance via Prototype Chain)
+  context: Record<symbol, unknown>;
 
-  // --- new: for minimal reconciliation ---
-  subtree?: VChild;          // last rendered VChild returned from component (for patching)
+  // Minimal reconciliation
+  subtree?: VChild;
 };
 
-// current component being rendered
 let currentComponent: ComponentInstance | null = null;
 
 export function getCurrentComponent(): ComponentInstance {
@@ -41,7 +43,11 @@ export function setCurrentComponent(comp: ComponentInstance | null) {
   currentComponent = comp;
 }
 
-export function createComponentInstance(name?: string): ComponentInstance {
+/**
+ * Creates a new component instance.
+ * Fix C: Inherits context from parent if provided.
+ */
+export function createComponentInstance(name?: string, parentContext?: Record<symbol, unknown>): ComponentInstance {
   return {
     hooks: [],
     hookIndex: 0,
@@ -54,6 +60,8 @@ export function createComponentInstance(name?: string): ComponentInstance {
     name,
     signals: [],
     subtree: null,
+    // Prototype inheritance allows O(1) context reads and independent writes
+    context: parentContext ? Object.create(parentContext) : {},
   };
 }
 
@@ -61,9 +69,6 @@ export function resetHooks(comp: ComponentInstance) {
   comp.hookIndex = 0;
 }
 
-/**
- * Delegate scheduling to the central batcher; noop DOM here.
- */
 export async function markDirty(comp: ComponentInstance) {
   const batcher = await import('./batcher');
   batcher.scheduleUpdate(comp);

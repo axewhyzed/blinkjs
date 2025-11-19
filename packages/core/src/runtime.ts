@@ -1,14 +1,9 @@
 // packages/core/src/runtime.ts
 // BlinkJS - runtime.ts
-// Mounting, rendering, update scheduling (delegated to batcher), and component lifecycle wiring.
+// Hydration + Context Propagation + Type Safety
 
-import { VNode, VChild, createDom, FragmentSymbol, isVNode } from './dom';
-import {
-  ComponentInstance,
-  createComponentInstance,
-  setCurrentComponent,
-  resetHooks,
-} from './component';
+import { VNode, VChild, createDom, FragmentSymbol, isVNode, applyProps, bindSignalToNode } from './dom';
+import { ComponentInstance, createComponentInstance, setCurrentComponent, resetHooks } from './component';
 import { patch } from './reconcile';
 
 const instanceDomMap = new WeakMap<ComponentInstance, Node>();
@@ -26,161 +21,191 @@ export async function scheduleUpdate(inst: ComponentInstance) {
 }
 
 export function mountApp(rootSelector: string | Element, App: Function) {
-  const rootEl =
-    typeof rootSelector === 'string'
-      ? (document.querySelector(rootSelector) as Element | null)
-      : (rootSelector as Element);
+  const rootEl = typeof rootSelector === 'string' ? document.querySelector(rootSelector) : rootSelector;
+  if (!rootEl) throw new Error('[BlinkJS] Root not found');
 
-  if (!rootEl) {
-    throw new Error(`[BlinkJS] mountApp: root element not found: ${String(rootSelector)}`);
-  }
+  if (roots.has(rootEl as Element)) unmountApp(rootEl as Element);
 
-  if (roots.has(rootEl)) {
-    const info = roots.get(rootEl)!;
-    if (info.rootInstance) {
-      unmountInstance(info.rootInstance);
-    }
-    roots.delete(rootEl);
-    rootEl.innerHTML = '';
-  }
+  const rootInst = createComponentInstance((App as any).name || 'AppRoot');
+  roots.set(rootEl as Element, { rootEl: rootEl as Element, appComponent: App, rootInstance: rootInst });
 
-  const info: RootInfo = { rootEl, appComponent: App as Function };
-  roots.set(rootEl, info);
-
-  const rootInst = createComponentInstance((App && (App as any).name) || 'AppRoot');
-  info.rootInstance = rootInst;
-
-  // Initial render
-  const vnode = invokeComponent(rootInst, App as Function, {});
+  const vnode = invokeComponent(rootInst, App, {});
   rootInst.subtree = vnode;
-  const dom = renderVNode(vnode);
-  rootInst.dom = dom;
-  rootInst.mounted = true;
-  instanceDomMap.set(rootInst, dom);
-  rootEl.appendChild(dom);
 
+  // Hydration Check
+  if ((rootEl as Element).hasChildNodes()) {
+    const dom = hydrateVNode((rootEl as Element).firstChild!, vnode, rootInst.context);
+    rootInst.dom = dom;
+  } else {
+    const dom = renderVNode(vnode, rootInst.context);
+    rootInst.dom = dom;
+    rootEl!.appendChild(dom);
+  }
+
+  rootInst.mounted = true;
+  instanceDomMap.set(rootInst, rootInst.dom!);
   runEffects(rootInst);
 }
 
 export function unmountApp(rootSelector: string | Element) {
-  const rootEl =
-    typeof rootSelector === 'string'
-      ? (document.querySelector(rootSelector) as Element | null)
-      : (rootSelector as Element);
-
+  const rootEl = typeof rootSelector === 'string' ? document.querySelector(rootSelector) : rootSelector;
   if (!rootEl) return;
-
-  const info = roots.get(rootEl);
-  if (!info) {
-    rootEl.innerHTML = '';
-    return;
-  }
-
-  if (info.rootInstance) {
-    unmountInstance(info.rootInstance);
-  }
-  roots.delete(rootEl);
-  rootEl.innerHTML = '';
+  const info = roots.get(rootEl as Element);
+  if (info?.rootInstance) unmountInstance(info.rootInstance);
+  roots.delete(rootEl as Element);
+  (rootEl as Element).innerHTML = '';
 }
 
 function invokeComponent(inst: ComponentInstance, compFn: Function, props: any): VChild {
   resetHooks(inst);
   setCurrentComponent(inst);
-
-  // inst.vnode is just a wrapper for context, not the full tree
   inst.vnode = { tag: compFn as any, props, children: [] };
-
-  let result: any;
+  
   try {
-    result = (compFn as any)(props || {});
+    const res = (compFn as any)(props || {});
+    if (Array.isArray(res)) return { tag: FragmentSymbol, props: null, children: res };
+    return res;
   } finally {
     setCurrentComponent(null);
   }
-
-  if (result === null || result === undefined) {
-    return null;
-  }
-  if (typeof result === 'string' || typeof result === 'number') {
-    return result;
-  }
-  if (Array.isArray(result)) {
-    return {
-      tag: FragmentSymbol,
-      props: null,
-      children: result,
-    } as VNode;
-  }
-  return result as VNode;
 }
 
-/**
- * Helper to check if a VNode is a component (function tag)
- */
-function isComponentVNode(vnode: VChild): vnode is VNode {
-  return isVNode(vnode) && typeof vnode.tag === 'function';
-}
+export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown> = {}): Node {
+  if (vnode == null) return document.createTextNode('');
+  if (typeof vnode === 'string' || typeof vnode === 'number') return document.createTextNode(String(vnode));
 
-/**
- * Exported so dom.ts can delegate function-component VNodes here (initial mount path).
- */
-export function renderVNode(vnode: VChild): Node {
-  if (vnode === null || vnode === undefined) {
-    return document.createTextNode('');
-  }
-  if (typeof vnode === 'string' || typeof vnode === 'number') {
-    return document.createTextNode(String(vnode));
+  // If it's not a VNode, it might be a Signal or unknown (fallback to createDom)
+  if (!isVNode(vnode)) {
+    return createDom(vnode);
   }
 
-  if (isComponentVNode(vnode)) {
+  // 1. Component
+  if (typeof vnode.tag === 'function') {
     const compFn = vnode.tag as Function;
-    const inst = createComponentInstance((compFn as any).name || 'Component');
-
+    const inst = createComponentInstance((compFn as any).name, parentContext);
     inst.vnode = vnode;
 
     const childVNode = invokeComponent(inst, compFn, vnode.props || {});
-    inst.subtree = childVNode; // track subtree for future patches
-
-    const childDom = renderVNode(childVNode);
+    inst.subtree = childVNode;
+    
+    const childDom = renderVNode(childVNode, inst.context);
+    
     inst.dom = childDom;
     inst.mounted = true;
     instanceDomMap.set(inst, childDom);
     runEffects(inst);
-
     return childDom;
   }
 
-  // If it's a standard VNode (HTML tag or Fragment)
-  return createDom(vnode);
+  // 2. Fragment
+  if (vnode.tag === FragmentSymbol) {
+    const frag = document.createDocumentFragment();
+    for (const c of vnode.children) frag.appendChild(renderVNode(c, parentContext));
+    return frag;
+  }
+
+  // 3. Element
+  const el = document.createElement(String(vnode.tag));
+  if (vnode.props) applyProps(el, vnode.props);
+  for (const c of vnode.children) el.appendChild(renderVNode(c, parentContext));
+  return el;
 }
 
-/**
- * Rerender using minimal patching.
- */
+function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, unknown>): Node {
+  // Handle Primitives (String/Number/Signal-like)
+  if (!isVNode(vnode)) {
+    const isSignal = vnode && typeof vnode === 'object' && 'value' in (vnode as any);
+    const val = isSignal ? (vnode as any).value : vnode;
+    const strVal = String(val ?? '');
+
+    // If the DOM node is text, update/bind it
+    if (node.nodeType === 3) {
+       if (isSignal && 'subscribe' in (vnode as any)) {
+          bindSignalToNode(node, vnode as any);
+       }
+       if (node.textContent !== strVal) node.textContent = strVal;
+       return node;
+    }
+    // Mismatch: replace
+    const newNode = renderVNode(vnode, parentContext);
+    node.parentNode?.replaceChild(newNode, node);
+    return newNode;
+  }
+
+  // 1. Component
+  if (typeof vnode.tag === 'function') {
+    const compFn = vnode.tag as Function;
+    const inst = createComponentInstance((compFn as any).name, parentContext);
+    inst.vnode = vnode;
+    const childVNode = invokeComponent(inst, compFn, vnode.props || {});
+    inst.subtree = childVNode;
+    
+    // Recurse hydration on the same node (components don't introduce a wrapper DOM node themselves)
+    const hydratedDom = hydrateVNode(node, childVNode, inst.context);
+    inst.dom = hydratedDom;
+    inst.mounted = true;
+    instanceDomMap.set(inst, hydratedDom);
+    runEffects(inst);
+    return hydratedDom;
+  }
+
+  // 2. Fragment
+  if (vnode.tag === FragmentSymbol) {
+     let sibling: Node | null = node;
+     for (const child of vnode.children) {
+         if (sibling) {
+             // Fix: Explicit type annotation prevents cyclic inference error (TS 7022)
+             const next: Node | null = sibling.nextSibling;
+             hydrateVNode(sibling, child, parentContext);
+             sibling = next;
+         }
+     }
+     return node; 
+  }
+
+  // 3. Element
+  if (node.nodeType === 1 && (node as Element).tagName.toLowerCase() === String(vnode.tag).toLowerCase()) {
+      if (vnode.props) applyProps(node as Element, vnode.props);
+      
+      let domChild: Node | null = node.firstChild;
+      for (const vChild of vnode.children) {
+          if (domChild) {
+              // Fix: Explicit type annotation here as well
+              const next: Node | null = domChild.nextSibling;
+              hydrateVNode(domChild, vChild, parentContext);
+              domChild = next;
+          } else {
+              node.appendChild(renderVNode(vChild, parentContext));
+          }
+      }
+      return node;
+  }
+
+  // Tag mismatch fallback
+  const newNode = renderVNode(vnode, parentContext);
+  node.parentNode?.replaceChild(newNode, node);
+  return newNode;
+}
+
 export function rerenderComponent(inst: ComponentInstance) {
   if (!inst || !inst.mounted) return;
-
   const vnodeWrapper = inst.vnode;
-  // Safety check: ensure it is actually a component wrapper
   if (!vnodeWrapper || typeof vnodeWrapper.tag !== 'function') return;
 
   const compFn = vnodeWrapper.tag as Function;
-  const oldSubtree = inst.subtree;
-
   const newSubtree = invokeComponent(inst, compFn, vnodeWrapper.props || {});
-  const oldDom = inst.dom as Node;
-  const parent = oldDom.parentNode as Node | null;
-
-  if (parent) {
-    // We can safely pass 'undefined' as VChild? No, let's ensure null fallback
-    const validOld = oldSubtree === undefined ? null : oldSubtree;
-    const newDom = patch(parent, validOld, newSubtree, oldDom);
-    
+  
+  if (inst.dom && inst.dom.parentNode) {
+    const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree, inst.dom);
     inst.dom = newDom;
     inst.subtree = newSubtree;
     instanceDomMap.set(inst, newDom);
   }
-
   runEffects(inst);
+}
+
+export function getInstanceForDom(node: Node): ComponentInstance | null {
+  return null;
 }
 
 function unmountInstance(inst: ComponentInstance) {
@@ -214,11 +239,4 @@ function runEffects(inst: ComponentInstance) {
       console.error('[BlinkJS] effect error:', err);
     }
   }
-}
-
-export function getInstanceForDom(node: Node): ComponentInstance | null {
-  // WeakMap iteration isn't possible, but if we needed this feature 
-  // we would need to store the instance on the DOM node directly.
-  // For now, returning null as strictly per WeakMap limitations.
-  return null;
 }

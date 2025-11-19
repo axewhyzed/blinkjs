@@ -1,5 +1,5 @@
 // packages/core/src/dom.ts
-// BlinkJS - DOM utilities with auto-reactive signals & Event Delegation
+// BlinkJS - DOM utilities with Event Delegation & Signal Binding
 
 import { Signal } from './hooks/useSignal';
 import { getCurrentComponentUnsafe } from './component';
@@ -11,166 +11,85 @@ export type VNode = {
   children: VChild[];
 };
 
-export type ComponentFn = (
-  props: Record<string, any>,
-  ...children: VChild[]
-) => VChild | VChild[];
-
+export type ComponentFn = (props: Record<string, any>, ...children: VChild[]) => VChild | VChild[];
 export const FragmentSymbol = Symbol('BLINK_FRAGMENT');
 
-// ---- Event Delegation Globals ----
 const delegatedEvents = new Set<string>();
 const rootDocument = typeof document !== 'undefined' ? document : null;
 
-/**
- * Global handler that traps events at the document level and simulates bubbling.
- */
 function globalEventHandler(e: Event) {
   let target = e.target as Node | null;
   const eventType = e.type.toLowerCase();
-
-  // Simulate bubbling: traverse from target up to root
   while (target && target !== rootDocument) {
     const handlers = (target as any).__blinkHandlers;
-    if (handlers && handlers[eventType]) {
-      handlers[eventType](e);
-      // Optional: check e.cancelBubble if strict stopPropagation is needed
-    }
+    if (handlers && handlers[eventType]) handlers[eventType](e);
     target = target.parentNode;
   }
 }
 
-// ---- helper to detect BlinkJS signals ----
 function isSignal(obj: any): obj is Signal<any> {
   return obj && typeof obj === 'object' && 'value' in obj && typeof obj.subscribe === 'function';
 }
 
-/**
- * el() — user-facing helper to create VNodes
- */
-export function el(
-  tag: string | typeof FragmentSymbol | ComponentFn,
-  props?: Record<string, any> | null,
-  ...children: any[]
-): VNode {
-  if (props == null) props = null;
-
-  const flatChildren: VChild[] = children.flat(Infinity).filter(c => c !== null && c !== undefined);
-
+export function el(tag: string | typeof FragmentSymbol | ComponentFn, props?: Record<string, any> | null, ...children: any[]): VNode {
   return {
     tag,
-    props,
-    children: flatChildren
+    props: props || null,
+    children: children.flat(Infinity).filter(c => c != null)
   };
 }
 
-/** Type guard to detect VNode */
 export function isVNode(x: any): x is VNode {
   return x != null && typeof x === 'object' && 'tag' in x && 'children' in x;
 }
 
-/**
- * createDom(vnode)
- * Convert a VNode (or primitive) into a real DOM Node.
- * IMPORTANT: Function-component VNodes MUST be handled by the runtime.
- */
 export function createDom(vnode: VChild): Node {
-  if (vnode === null || vnode === undefined) return textNode('');
+  if (vnode == null) return textNode('');
   if (typeof vnode === 'string' || typeof vnode === 'number') return textNode(vnode);
-
-  if (isSignal(vnode)) {
-    return createSignalNode(vnode);
-  }
+  if (isSignal(vnode)) return createSignalNode(vnode);
 
   const v = vnode as VNode;
-
-  // Guard: runtime is responsible for function components.
-  if (typeof v.tag === 'function') {
-    throw new Error(
-      '[BlinkJS] createDom received a function-component VNode. This should be rendered by the runtime.'
-    );
-  }
-
+  if (typeof v.tag === 'function') throw new Error('[BlinkJS] Function VNode passed to createDom');
+  
   if (v.tag === FragmentSymbol) {
     const frag = document.createDocumentFragment();
-    for (const child of v.children) {
-      frag.appendChild(createDom(child));
-    }
+    for (const child of v.children) frag.appendChild(createDom(child));
     return frag;
   }
 
   const elNode = document.createElement(String(v.tag));
-
-  if (v.props) {
-    for (const [k, val] of Object.entries(v.props)) {
-      if (isSignal(val)) {
-        setProp(elNode, k, val.value);
-        const disposer = val.subscribe?.(() => setProp(elNode, k, val.value));
-        if (typeof disposer === 'function') {
-          const inst = getCurrentComponentUnsafe();
-          inst?.cleanup.push(disposer);
-        }
-      } else {
-        setProp(elNode, k, val);
-      }
-    }
-  }
-
-  for (const child of v.children) {
-    appendChild(elNode, child);
-  }
-
+  if (v.props) applyProps(elNode, v.props);
+  for (const child of v.children) appendChild(elNode, child);
   return elNode;
 }
 
 function createSignalNode(signal: Signal<any>): Node {
-  let currentNode = createDom(signal.value);
+  const node = textNode(signal.value);
+  bindSignalToNode(node, signal);
+  return node;
+}
 
+// Suggestion 1: Exposed for Hydration
+export function bindSignalToNode(node: Node, signal: Signal<any>) {
   const update = () => {
-    const newNode = createDom(signal.value);
-    if (currentNode.parentNode) {
-      currentNode.parentNode.replaceChild(newNode, currentNode);
+    const newVal = String(signal.value);
+    // Only text nodes supported for direct signal children
+    if (node.nodeType === 3 && node.textContent !== newVal) {
+        node.textContent = newVal;
     }
-    currentNode = newNode;
   };
-
   const disposer = signal.subscribe?.(update);
   if (typeof disposer === 'function') {
     const inst = getCurrentComponentUnsafe();
     inst?.cleanup.push(disposer);
   }
-
-  return currentNode;
 }
 
 function appendChild(parent: Node, child: any): void {
   if (Array.isArray(child)) {
-    for (const nested of child) {
-      appendChild(parent, nested);
-    }
+    child.forEach(c => appendChild(parent, c));
   } else if (isSignal(child)) {
-    const placeholder = textNode('');
-    parent.appendChild(placeholder);
-
-    let currentNode: Node = placeholder;
-
-    const update = () => {
-      const newNode = createDom(child.value);
-      if (currentNode.parentNode) {
-        currentNode.parentNode.replaceChild(newNode, currentNode);
-        currentNode = newNode;
-      }
-    };
-
-    update();
-
-    const disposer = child.subscribe?.(update);
-    if (typeof disposer === 'function') {
-      const inst = getCurrentComponentUnsafe();
-      inst?.cleanup.push(disposer);
-    }
-  } else if (typeof child === 'function') {
-    appendChild(parent, child());
+    parent.appendChild(createSignalNode(child));
   } else if (isVNode(child)) {
     parent.appendChild(createDom(child));
   } else if (child != null) {
@@ -178,34 +97,31 @@ function appendChild(parent: Node, child: any): void {
   }
 }
 
-/**
- * setProp(el, name, value)
- * Handles:
- * - Events: Delegated to document root for performance
- * - class / className
- * - style: object { color: 'red' } or string
- * - boolean attributes: disabled, checked, etc.
- * - normal attributes
- */
+// Shared between createDom and Hydration
+export function applyProps(el: Element, props: Record<string, any>) {
+    for (const [k, val] of Object.entries(props)) {
+        if (isSignal(val)) {
+            setProp(el, k, val.value);
+            const disposer = val.subscribe?.(() => setProp(el, k, val.value));
+            if (typeof disposer === 'function') {
+                const inst = getCurrentComponentUnsafe();
+                inst?.cleanup.push(disposer);
+            }
+        } else {
+            setProp(el, k, val);
+        }
+    }
+}
+
 export function setProp(el: Element, name: string, value: any) {
   if (name === 'className') name = 'class';
-
-  // -- Optimized Event Delegation --
   if (/^on[A-Z]/.test(name)) {
-    const eventName = name.slice(2).toLowerCase(); // onClick -> click
-    
-    // Store handler on the element itself
+    const eventName = name.slice(2).toLowerCase();
     const handlers = (el as any).__blinkHandlers || ((el as any).__blinkHandlers = {});
-    
     if (value) {
       handlers[eventName] = value;
-      
-      // Register global listener only once per event type
       if (!delegatedEvents.has(eventName) && rootDocument) {
         delegatedEvents.add(eventName);
-        
-        // Handle focus/blur via capturing or specific mapping if needed.
-        // For simplicity, we use standard binding; note focus/blur don't bubble standardly.
         const useCapture = eventName === 'focus' || eventName === 'blur';
         rootDocument.addEventListener(eventName, globalEventHandler, useCapture);
       }
@@ -215,44 +131,22 @@ export function setProp(el: Element, name: string, value: any) {
     return;
   }
 
-  // -- Style Handling --
   if (name === 'style') {
-    if (!value) {
-      (el as HTMLElement).removeAttribute('style');
-      return;
-    }
-    if (typeof value === 'string') {
-      (el as HTMLElement).style.cssText = value;
-      return;
-    }
-
-    const styleObj = value as Record<string, string | number>;
-    for (const [sname, sval] of Object.entries(styleObj)) {
-      (el as HTMLElement).style[sname as any] = String(sval);
+    if (typeof value === 'string') { (el as HTMLElement).style.cssText = value; return; }
+    if (value && typeof value === 'object') {
+      Object.assign((el as HTMLElement).style, value);
     }
     return;
   }
 
-  // -- Boolean Attributes --
-  const booleanAttrs = new Set(['disabled', 'checked', 'readonly', 'multiple', 'selected', 'hidden']);
+  const booleanAttrs = new Set(['disabled', 'checked', 'readonly', 'hidden']);
   if (booleanAttrs.has(name)) {
-    if (value) {
-      el.setAttribute(name, '');
-      (el as any)[name] = true;
-    } else {
-      el.removeAttribute(name);
-      (el as any)[name] = false;
-    }
+    if (value) el.setAttribute(name, ''); else el.removeAttribute(name);
     return;
   }
 
-  // -- Normal Attributes --
-  if (value === null || value === undefined) {
-    el.removeAttribute(name);
-    return;
-  }
-
-  el.setAttribute(name, String(value));
+  if (value == null) el.removeAttribute(name);
+  else el.setAttribute(name, String(value));
 }
 
 export function textNode(str: string | number) {
