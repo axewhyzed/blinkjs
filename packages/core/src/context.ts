@@ -1,7 +1,7 @@
 // BlinkJS - context.ts
-// Minimal Context API (Instance-based)
+// Fixed: Use display:contents to prevent Fragment Unmount Crash
 
-import { FragmentSymbol, el } from './dom';
+import { el } from './dom';
 import { getCurrentComponent } from './component';
 
 export type Context<T> = {
@@ -15,13 +15,14 @@ export function createContext<T>(defaultValue?: T): Context<T> {
 
   function Provider(props: { value: T; children?: any }) {
     const inst = getCurrentComponent();
-    // Shadow the key in this component's context scope.
-    // Children created by this component will inherit this new scope.
     inst.context[key] = props.value;
 
-    // Render children directly (Fragment)
     const kids = Array.isArray(props.children) ? props.children : [props.children];
-    return el(FragmentSymbol, null, ...(kids ?? []));
+    
+    // FIX: Use a physical wrapper with display:contents.
+    // This ensures inst.dom points to a real node that stays in the tree,
+    // allowing unmount/patch to work correctly without breaking CSS layouts.
+    return el('div', { style: { display: 'contents' } }, ...kids);
   }
 
   return { key, Provider, defaultValue };
@@ -29,7 +30,6 @@ export function createContext<T>(defaultValue?: T): Context<T> {
 
 export function useContext<T>(ctx: Context<T>): T {
   const inst = getCurrentComponent();
-  // Lookup via prototype chain
   const val = inst.context[ctx.key];
   return val !== undefined ? (val as T) : (ctx.defaultValue as T);
 }

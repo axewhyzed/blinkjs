@@ -1,5 +1,6 @@
 // packages/core/src/reconcile.ts
 // BlinkJS - reconcile.ts
+// Fix 3: Iterative Flattening for Stack Safety
 
 import { VChild, VNode, isVNode, createDom, setProp, FragmentSymbol } from './dom';
 
@@ -19,17 +20,30 @@ function getKey(v: VChild): any | null {
 }
 
 /**
- * Fix B: Flatten fragments to allow keys to bubble up for diffing.
+ * Fix 3: Iterative flattening.
+ * Uses a stack to flatten children without recursion, preventing stack overflow on large lists.
  */
 function flattenChildren(children: VChild[]): VChild[] {
   const out: VChild[] = [];
-  for (const c of children) {
+  // Create a shallow copy and reverse it so we can pop from the end (efficiently)
+  const stack = [...children].reverse();
+
+  while (stack.length > 0) {
+    const c = stack.pop();
+    
     if (isVNode(c) && c.tag === FragmentSymbol) {
-      out.push(...flattenChildren(c.children));
+      // If Fragment, push its children onto the stack.
+      // Push in reverse order so they come off the stack in correct order.
+      for (let i = c.children.length - 1; i >= 0; i--) {
+        stack.push(c.children[i]);
+      }
     } else if (Array.isArray(c)) {
-        // Handle accidental nested arrays
-        out.push(...flattenChildren(c));
+      // Handle nested arrays (e.g. {items.map(...)})
+      for (let i = c.length - 1; i >= 0; i--) {
+        stack.push(c[i]);
+      }
     } else {
+      // Standard Node
       out.push(c);
     }
   }
@@ -37,9 +51,11 @@ function flattenChildren(children: VChild[]): VChild[] {
 }
 
 export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: Node): Node {
+  // Uniform null handling
   if (oldVNode == null) oldVNode = '';
   if (newVNode == null) newVNode = '';
 
+  // Text Update
   if (isTextLike(oldVNode) && isTextLike(newVNode)) {
     if (String(oldVNode) !== String(newVNode)) {
       (oldDom as Text).data = String(newVNode);
@@ -47,6 +63,7 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
     return oldDom;
   }
 
+  // Type Mismatch -> Replace
   if (!sameVNodeType(oldVNode, newVNode)) {
     const newDom = createDom(newVNode);
     if (oldDom.parentNode) {
@@ -55,10 +72,12 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
     return newDom;
   }
 
+  // Same Element -> Diff Props & Children
   const oldV = oldVNode as VNode;
   const newV = newVNode as VNode;
   const el = oldDom as Element;
 
+  // Props
   const oldProps = oldV.props || {};
   const newProps = newV.props || {};
   
@@ -69,7 +88,7 @@ export function patch(parent: Node, oldVNode: VChild, newVNode: VChild, oldDom: 
     if (!(k in newProps)) setProp(el, k, undefined);
   }
 
-  // Fix B: Flatten children before diffing
+  // Children: Flatten before diffing to support keys in Fragments
   const oldChildren = flattenChildren(oldV.children || []);
   const newChildren = flattenChildren(newV.children || []);
 
@@ -91,17 +110,18 @@ function patchChildrenSequential(el: Element, oldC: VChild[], newC: VChild[]) {
   for (let i = 0; i < minLen; i++) {
     const childDom = childNodes[i];
     const patched = patch(el, oldC[i], newC[i], childDom);
-    // If patch replaced the node, ensure we don't lose track
+    // Check if patch replaced the node, ensuring we don't lose track
     if (patched !== childDom && el.childNodes[i] !== patched) {
-        // Should already be handled by patch's replaceChild, 
-        // but logic here safeguards strict sequential order.
+        // Logic mostly handled by patch's replaceChild
     }
   }
 
+  // Append extras
   for (let i = minLen; i < newC.length; i++) {
     el.appendChild(createDom(newC[i]));
   }
 
+  // Remove leftovers
   for (let i = childNodes.length - 1; i >= newC.length; i--) {
     const n = childNodes[i];
     el.removeChild(n);
@@ -130,12 +150,14 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
     if (key != null) {
       const entry = oldKeyMap.get(key);
       if (entry) {
+        // Move & Patch
         const patchedDom = patch(el, entry.vnode, newChild, entry.dom);
         entry.used = true;
         if (patchedDom !== refNode) el.insertBefore(patchedDom, refNode);
         cursor++;
         continue;
       } else {
+        // New Key -> Insert
         const newDom = createDom(newChild);
         el.insertBefore(newDom, refNode);
         cursor++;
@@ -143,17 +165,14 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
       }
     }
 
-    // Unkeyed fallback
+    // Unkeyed Fallback
     const currentDom = el.childNodes[cursor] || null;
     if (currentDom) {
       const oldVNode = oldC[cursor];
       if (oldVNode !== undefined) {
-        // Patch existing
         const patched = patch(el, oldVNode, newChild, currentDom);
         if (patched !== currentDom) {
             el.insertBefore(patched, currentDom);
-            // If we inserted a new node, the old one (currentDom) is pushed. 
-            // We should remove it if we replaced it logically.
             if (currentDom.parentNode === el) el.removeChild(currentDom);
         }
       } else {
@@ -165,14 +184,13 @@ function patchChildrenKeyed(el: Element, oldC: VChild[], newC: VChild[]) {
     cursor++;
   }
 
-  // Cleanup unused keyed nodes
+  // Cleanup
   for (const [, entry] of oldKeyMap) {
     if (!entry.used && entry.dom.parentNode === el) {
       el.removeChild(entry.dom);
     }
   }
   
-  // Cleanup extra unkeyed nodes
   while (el.childNodes.length > cursor) {
     el.removeChild(el.lastChild!);
   }

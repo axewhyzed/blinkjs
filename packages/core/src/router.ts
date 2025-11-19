@@ -1,10 +1,10 @@
 // packages/core/src/router.ts
 // BlinkJS - router.ts
-// Component-based Router (Fixed Exports & Types)
+// Fix 2: Outlet Safety + TypeScript Casting
 
 import { useSignal, Signal } from './hooks/useSignal';
 import { onStart } from './hooks/lifecycle';
-import { el, FragmentSymbol } from './dom';
+import { el, FragmentSymbol } from './dom'; 
 import { createContext, useContext } from './context';
 
 // --- Types ---
@@ -31,8 +31,6 @@ type RouterContextValue = {
 const RouterCtx = createContext<RouterContextValue | null>(null);
 
 // --- Global Config (Compatibility) ---
-// We keep this so 'defineRoutes' doesn't crash existing code, 
-// but the preferred way is passing routes prop to <Router>
 let globalRoutes: RouteDef[] = [];
 
 export function defineRoutes(defs: RouteDef[]) {
@@ -41,13 +39,8 @@ export function defineRoutes(defs: RouteDef[]) {
 
 /**
  * <Router routes={...}>
- * <Layout>
- * <Outlet />
- * </Layout>
- * </Router>
  */
 export function Router(props: { routes?: RouteDef[]; children: any }) {
-  // Use props.routes if provided, otherwise fallback to globalRoutes (compat)
   const initialRoutes = props.routes || globalRoutes;
   const compiledRoutes = initialRoutes.map(compileRoute);
   
@@ -75,13 +68,12 @@ export function Router(props: { routes?: RouteDef[]; children: any }) {
     routes: compiledRoutes
   };
 
-  // FIXED: Cast RouterCtx.Provider to 'any' to satisfy ComponentFn signature
+  // Fix: Cast to 'any' to satisfy strict TS checks on generic ComponentFn
   return el(RouterCtx.Provider as any, { value }, props.children);
 }
 
 /**
  * <Outlet />
- * Renders the component matching the current route.
  */
 export function Outlet() {
   const ctx = useContext(RouterCtx);
@@ -91,8 +83,7 @@ export function Outlet() {
   const match = matchRoute(path, ctx.routes);
 
   if (match) {
-    // Update signals so hooks like useParams() work
-    // We batch these updates implicitly via the signal system
+    // Implicit batch update via signals
     if (JSON.stringify(ctx.params.value) !== JSON.stringify(match.params)) {
         ctx.params.value = match.params;
     }
@@ -106,7 +97,10 @@ export function Outlet() {
     return el(Comp as any, {});
   }
 
-  return el(FragmentSymbol, null);
+  // Fix 2: Return explicit null.
+  // This renders as an empty Text Node in the DOM, which is a valid "Physical" node.
+  // This prevents the crash where a parent tries to remove an empty Fragment.
+  return null;
 }
 
 // --- Hooks ---
