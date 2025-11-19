@@ -4,7 +4,7 @@
 
 import { useSignal, Signal } from '../engine/hooks/useSignal';
 import { onStart } from '../engine/hooks/lifecycle';
-import { el, FragmentSymbol } from '../engine/internal/dom'; 
+import { el, Fragment } from '../engine/internal/dom'; 
 import { createContext, useContext } from './context';
 
 // --- Types ---

@@ -1,19 +1,21 @@
 // packages/core/engine/internal/dom.ts
-// Fixed: Handle booleans as empty nodes
+// Fixed: Handle booleans as empty nodes & harden createDom
 
 import { Signal } from '../hooks/useSignal';
 import { getCurrentComponentUnsafe } from './component';
 
 export type VChild = VNode | string | number | boolean | null | undefined;
 export type VNode = {
-  tag: string | typeof FragmentSymbol | ComponentFn;
+  tag: string | typeof Fragment | ComponentFn;
   props: Record<string, any> | null;
   children: VChild[];
 };
 
 export type ComponentFn = (props: Record<string, any>, ...children: VChild[]) => VChild | VChild[] | Promise<VChild | VChild[]>;
 
-export const FragmentSymbol = Symbol('BLINK_FRAGMENT');
+export function Fragment(props: { children?: any }) {
+  return props.children;
+}
 
 const delegatedEvents = new Set<string>();
 const rootDocument = typeof document !== 'undefined' ? document : null;
@@ -32,11 +34,11 @@ function isSignal(obj: any): obj is Signal<any> {
   return obj && typeof obj === 'object' && 'value' in obj && typeof obj.subscribe === 'function';
 }
 
-export function el(tag: string | typeof FragmentSymbol | ComponentFn, props?: Record<string, any> | null, ...children: any[]): VNode {
+export function el(tag: string | typeof Fragment | ComponentFn, props?: Record<string, any> | null, ...children: any[]): VNode {
   return {
     tag,
     props: props || null,
-    children: children.flat(Infinity) // .filter(c => c != null) <- Remove filter to handle conditional rendering logic in runtime
+    children: children.flat(Infinity)
   };
 }
 
@@ -61,9 +63,9 @@ export function createDomInternal(vnode: VChild, isSvg: boolean): Node {
   }
 
   const v = vnode as VNode;
-  if (typeof v.tag === 'function') throw new Error('[BlinkJS] Function VNode passed to createDom');
+  if (typeof v.tag === 'function' && v.tag !== Fragment) throw new Error('[BlinkJS] Function VNode passed to createDom');
   
-  if (v.tag === FragmentSymbol) {
+  if (v.tag === Fragment) {
     const frag = document.createDocumentFragment();
     for (const child of v.children) frag.appendChild(createDomInternal(child, isSvg));
     return frag;
@@ -91,7 +93,6 @@ function createSignalNode(signal: Signal<any>): Node {
 export function bindSignalToNode(node: Node, signal: Signal<any>) {
   const update = () => {
     const val = signal.value;
-    // Handle boolean signals in text
     const newVal = (val === true || val === false || val == null) ? '' : String(val);
     if (node.nodeType === 3 && node.textContent !== newVal) {
         node.textContent = newVal;
@@ -111,8 +112,7 @@ function appendChild(parent: Node, child: any, isSvg: boolean): void {
     parent.appendChild(createSignalNode(child));
   } else if (isVNode(child)) {
     parent.appendChild(createDomInternal(child, isSvg));
-  } else {
-    // Primitives (string, number, boolean, null)
+  } else if (child != null) {
     parent.appendChild(createDomInternal(child, isSvg));
   }
 }

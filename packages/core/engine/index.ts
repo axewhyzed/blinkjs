@@ -1,7 +1,7 @@
 // src/index.ts - BlinkJS entry point
 
 // Core DOM & component helpers
-export { el, FragmentSymbol } from './internal/dom';
+export { el, Fragment } from './internal/dom';
 export { mountApp, unmountApp } from './internal/runtime';
 
 // Hooks

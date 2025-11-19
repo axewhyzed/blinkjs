@@ -1,46 +1,39 @@
-// BlinkJS - batcher.ts
-// Handles batching of component updates to prevent multiple renders per frame.
-// This is the single source of truth for scheduling. Runtime delegates here.
+// packages/core/engine/internal/batcher.ts
+// Fixed: Added cancelUpdate to prevent double-renders
 
 import { ComponentInstance } from './component';
 import { rerenderComponent } from './runtime';
 
-// A set of dirty components to re-render
 const dirtySet = new Set<ComponentInstance>();
-
-// Flag to prevent multiple scheduled flushes
 let scheduled = false;
 
-/**
- * Schedule a component to be updated.
- * Components are batched and flushed in the next animation frame.
- */
 export function scheduleUpdate(inst: ComponentInstance) {
   if (!inst || !inst.mounted) return;
-
   dirtySet.add(inst);
 
   if (!scheduled) {
     scheduled = true;
-    requestAnimationFrame(() => {
-      flushUpdates();
-      scheduled = false;
-    });
+    requestAnimationFrame(flushUpdates);
   }
 }
 
-/**
- * Flush all dirty components by re-rendering them
- */
+// NEW: Called by runtime when a component is updated by its parent
+export function cancelUpdate(inst: ComponentInstance) {
+  dirtySet.delete(inst);
+}
+
 function flushUpdates() {
-  const components = Array.from(dirtySet);
+  scheduled = false;
+  const list = Array.from(dirtySet);
   dirtySet.clear();
 
-  for (const comp of components) {
-    try {
-      rerenderComponent(comp);
-    } catch (err) {
-      console.error('[BlinkJS] Error rerendering component:', err);
+  for (const inst of list) {
+    if (inst.mounted) {
+        try {
+            rerenderComponent(inst);
+        } catch (err) {
+            console.error('[BlinkJS] Error rerendering component:', err);
+        }
     }
   }
 }
