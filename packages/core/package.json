@@ -1,6 +1,6 @@
 {
   "name": "@axewhyzed/blink-js",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "The Micro-Framework that thinks it's a Big Framework.",
   "main": "dist/engine/index.js",
