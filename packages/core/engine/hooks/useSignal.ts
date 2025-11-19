@@ -1,8 +1,8 @@
 // packages/core/src/hooks/useSignal.ts
 // BlinkJS - Reactive signals & Computed values (Fixed Leak)
 
-import { getCurrentComponent } from '../component';
-import { scheduleUpdate } from '../batcher';
+import { getCurrentComponent } from '../internal/component';
+import { scheduleUpdate } from '../internal/batcher';
 import { onEnd } from './lifecycle';
 
 // ---- Dependency Tracking System ----

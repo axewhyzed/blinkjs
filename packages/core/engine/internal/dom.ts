@@ -1,7 +1,7 @@
 // packages/core/src/dom.ts
 // BlinkJS - DOM utilities with SVG & strict styles
 
-import { Signal } from './hooks/useSignal';
+import { Signal } from '../hooks/useSignal';
 import { getCurrentComponentUnsafe } from './component';
 
 export type VChild = VNode | string | number | null | undefined;

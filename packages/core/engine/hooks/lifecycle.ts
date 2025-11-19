@@ -6,7 +6,7 @@
 // - Make onChange call the previous cleanup before running the new effect,
 //   and ensure the latest cleanup runs on unmount.
 
-import { getCurrentComponent } from '../component';
+import { getCurrentComponent } from '../internal/component';
 
 /**
  * onStart(fn)

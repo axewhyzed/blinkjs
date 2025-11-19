@@ -1,7 +1,7 @@
 // BlinkJS - hooks/disposal.ts
 // Small helpers to register disposers on component unmount.
 
-import { getCurrentComponent } from '../component';
+import { getCurrentComponent } from '../internal/component';
 
 /**
  * Register a disposer to run when the current component unmounts.

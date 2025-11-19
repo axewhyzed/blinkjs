@@ -16,7 +16,7 @@ type RootInfo = {
 const roots = new Map<Element, RootInfo>();
 
 export async function scheduleUpdate(inst: ComponentInstance) {
-  const batcher = await import('./batcher');
+  const batcher = await import('../internal/batcher');
   batcher.scheduleUpdate(inst);
 }
 

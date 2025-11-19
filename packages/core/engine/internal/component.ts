@@ -3,7 +3,7 @@
 // Handles per-component state (hooks, lifecycle) and current render context.
 
 import { VNode, VChild } from './dom';
-import type { Signal } from './hooks/useSignal';
+import type { Signal } from '../hooks/useSignal';
 
 export type Hook = unknown;
 
@@ -70,6 +70,6 @@ export function resetHooks(comp: ComponentInstance) {
 }
 
 export async function markDirty(comp: ComponentInstance) {
-  const batcher = await import('./batcher');
+  const batcher = await import('../internal/batcher');
   batcher.scheduleUpdate(comp);
 }

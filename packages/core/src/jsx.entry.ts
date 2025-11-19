@@ -1,1 +1,0 @@
-export { h as jsx } from './jsx';

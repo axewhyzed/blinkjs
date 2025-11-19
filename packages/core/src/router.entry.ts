@@ -1,1 +1,0 @@
-export { defineRoutes, navigateTo, link } from './router';

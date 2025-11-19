@@ -2,9 +2,9 @@
 // BlinkJS - router.ts
 // Fix 2: Outlet Safety + TypeScript Casting
 
-import { useSignal, Signal } from './hooks/useSignal';
-import { onStart } from './hooks/lifecycle';
-import { el, FragmentSymbol } from './dom'; 
+import { useSignal, Signal } from '../hooks/useSignal';
+import { onStart } from '../hooks/lifecycle';
+import { el, FragmentSymbol } from '../internal/dom'; 
 import { createContext, useContext } from './context';
 
 // --- Types ---

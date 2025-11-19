@@ -1,40 +1,40 @@
 {
   "name": "blinkjs",
   "version": "0.1.0",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/engine/index.js",
+  "types": "dist/engine/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
-    "./core": "./dist/core.js",
-    "./router": "./dist/router.entry.js",
-    "./context": "./dist/context.entry.js",
-    "./portal": "./dist/portal.entry.js",
-    "./jsx": "./dist/jsx.entry.js",
-    "./ssr": "./dist/ssr.entry.js",
-    "./disposal": "./dist/disposal.entry.js"
+    ".": "./dist/engine/index.js",
+    "./core": "./dist/engine/core.js",
+    "./router": "./dist/modules/router.js",
+    "./context": "./dist/modules/context.js",
+    "./portal": "./dist/modules/portal.js",
+    "./jsx": "./dist/modules/jsx.js",
+    "./ssr": "./dist/modules/ssr.js",
+    "./disposal": "./dist/modules/disposal.js"
   },
   "typesVersions": {
     "*": {
       "core": [
-        "dist/core.d.ts"
+        "dist/engine/core.d.ts"
       ],
       "router": [
-        "dist/router.entry.d.ts"
+        "dist/modules/router.d.ts"
       ],
       "context": [
-        "dist/context.entry.d.ts"
+        "dist/modules/context.d.ts"
       ],
       "portal": [
-        "dist/portal.entry.d.ts"
+        "dist/modules/portal.d.ts"
       ],
       "jsx": [
-        "dist/jsx.entry.d.ts"
+        "dist/modules/jsx.d.ts"
       ],
       "ssr": [
-        "dist/ssr.entry.d.ts"
+        "dist/modules/ssr.d.ts"
       ],
       "disposal": [
-        "dist/disposal.entry.d.ts"
+        "dist/modules/disposal.d.ts"
       ]
     }
   },

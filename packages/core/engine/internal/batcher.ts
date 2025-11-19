@@ -2,8 +2,8 @@
 // Handles batching of component updates to prevent multiple renders per frame.
 // This is the single source of truth for scheduling. Runtime delegates here.
 
-import { ComponentInstance } from './component';
-import { rerenderComponent } from './runtime';
+import { ComponentInstance } from './internal/component';
+import { rerenderComponent } from './internal/runtime';
 
 // A set of dirty components to re-render
 const dirtySet = new Set<ComponentInstance>();
