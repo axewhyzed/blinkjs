@@ -1,6 +1,5 @@
-// packages/core/src/runtime.ts
-// BlinkJS - runtime.ts
-// Async Hydration Barrier + Error Boundaries + SVG Context
+// packages/core/engine/internal/runtime.ts
+// Fixed: Component Instance Tracking & Update Logic for Reconciler
 
 import { VNode, VChild, createDomInternal, FragmentSymbol, isVNode, applyProps, bindSignalToNode } from './dom';
 import { ComponentInstance, createComponentInstance, setCurrentComponent, resetHooks } from './component';
@@ -16,7 +15,7 @@ type RootInfo = {
 const roots = new Map<Element, RootInfo>();
 
 export async function scheduleUpdate(inst: ComponentInstance) {
-  const batcher = await import('../internal/batcher');
+  const batcher = await import('./batcher');
   batcher.scheduleUpdate(inst);
 }
 
@@ -32,9 +31,7 @@ export function mountApp(rootSelector: string | Element, App: Function) {
   const vnode = invokeComponentSync(rootInst, App, {});
   rootInst.subtree = vnode;
 
-  // Hydration Check
   if ((rootEl as Element).hasChildNodes()) {
-    // Hydration Barrier: Handle root hydration
     const dom = hydrateVNode((rootEl as Element).firstChild!, vnode, rootInst.context);
     rootInst.dom = dom;
   } else {
@@ -55,6 +52,68 @@ export function unmountApp(rootSelector: string | Element) {
   if (info?.rootInstance) unmountInstance(info.rootInstance);
   roots.delete(rootEl as Element);
   (rootEl as Element).innerHTML = '';
+}
+
+// --- Component Update Helper (Used by Reconcile) ---
+export function updateComponentFromVNode(dom: Node, newVNode: VNode, context: Record<symbol, unknown>) {
+  const inst = (dom as any).__blinkInstance as ComponentInstance;
+  if (!inst) {
+    // Should not happen if tree is healthy, but fallback to replace if lost
+    const newDom = renderVNode(newVNode, context);
+    if (dom.parentNode) dom.parentNode.replaceChild(newDom, dom);
+    return newDom;
+  }
+
+  // Update props and context
+  // Note: Context usually propagates down, but if we are patching a child, 
+  // we assume it inherits the passed context.
+  // inst.context = Object.create(context); // Mutable update of context? 
+  // Better: Re-invoke component with new props.
+  
+  const compFn = newVNode.tag as Function;
+  const props = getPropsWithChildren(newVNode.props, newVNode.children);
+  
+  inst.vnode = newVNode;
+  
+  // Re-run component
+  const res = invokeComponentSafe(inst, compFn, props);
+  
+  if (res instanceof Promise) {
+      // Async update not fully supported in synchronous patch loop yet
+      // but we handle the promise result
+     res.then(newSubtree => {
+         if (!inst.mounted) return;
+         if (inst.dom && inst.dom.parentNode) {
+            const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree as VChild, inst.dom, context);
+            inst.dom = newDom;
+            inst.subtree = newSubtree as VChild;
+            instanceDomMap.set(inst, newDom);
+            (newDom as any).__blinkInstance = inst; // Ensure link persists
+         }
+         runEffects(inst);
+     });
+     return dom; // Return old dom until promise resolves
+  }
+
+  const newSubtree = res as VChild;
+  const newDom = patch(inst.dom!.parentNode!, inst.subtree, newSubtree, inst.dom!, inst.context); // Recursive patch
+  
+  inst.dom = newDom;
+  inst.subtree = newSubtree;
+  instanceDomMap.set(inst, newDom);
+  (newDom as any).__blinkInstance = inst;
+  
+  runEffects(inst);
+  return newDom;
+}
+
+
+function getPropsWithChildren(vnodeProps: any, children: VChild[]) {
+  const props = vnodeProps || {};
+  if (children && children.length > 0) {
+    props.children = children.length === 1 ? children[0] : children;
+  }
+  return props;
 }
 
 function invokeComponentSafe(inst: ComponentInstance, compFn: Function, props: any): VChild | Promise<VChild> {
@@ -90,14 +149,15 @@ export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown
 
   if (!isVNode(vnode)) return createDomInternal(vnode, isSvg);
 
+  // 1. Component
   if (typeof vnode.tag === 'function') {
     const compFn = vnode.tag as Function;
     const inst = createComponentInstance((compFn as any).name, parentContext);
     inst.vnode = vnode;
 
-    const result = invokeComponentSafe(inst, compFn, vnode.props || {});
+    const props = getPropsWithChildren(vnode.props, vnode.children);
+    const result = invokeComponentSafe(inst, compFn, props);
     
-    // Async Component Handler
     if (result instanceof Promise) {
         const placeholder = document.createTextNode('');
         result.then(resolvedVNode => {
@@ -105,16 +165,17 @@ export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown
             inst.subtree = resolvedVNode as VChild;
             const realDom = renderVNode(resolvedVNode as VChild, inst.context, isSvg);
             
-            // Replace placeholder
             if (placeholder.parentNode) {
                 placeholder.parentNode.replaceChild(realDom, placeholder);
             }
             inst.dom = realDom;
             instanceDomMap.set(inst, realDom);
+            (realDom as any).__blinkInstance = inst; // Track Instance
             runEffects(inst);
         });
         inst.dom = placeholder;
         inst.mounted = true; 
+        (placeholder as any).__blinkInstance = inst;
         return placeholder;
     }
 
@@ -123,16 +184,19 @@ export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown
     inst.dom = childDom;
     inst.mounted = true;
     instanceDomMap.set(inst, childDom);
+    (childDom as any).__blinkInstance = inst; // Track Instance
     runEffects(inst);
     return childDom;
   }
 
+  // 2. Fragment
   if (vnode.tag === FragmentSymbol) {
     const frag = document.createDocumentFragment();
     for (const c of vnode.children) frag.appendChild(renderVNode(c, parentContext, isSvg));
     return frag;
   }
 
+  // 3. Element
   if (String(vnode.tag).toLowerCase() === 'svg') isSvg = true;
   
   const el = isSvg 
@@ -144,7 +208,6 @@ export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown
   return el;
 }
 
-// Helper: Get next non-whitespace sibling for hydration
 function getNextSibling(node: Node | null): Node | null {
   let current = node;
   while (current && current.nodeType === 3 && !current.textContent?.trim()) {
@@ -154,7 +217,6 @@ function getNextSibling(node: Node | null): Node | null {
 }
 
 function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, unknown>): Node {
-  // 0. Handle Non-VNodes (Text, Signals)
   if (!isVNode(vnode)) {
     const isSignal = vnode && typeof vnode === 'object' && 'value' in (vnode as any);
     const val = isSignal ? (vnode as any).value : vnode;
@@ -170,52 +232,41 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
     return newNode;
   }
 
-  // 1. Component
   if (typeof vnode.tag === 'function') {
     const compFn = vnode.tag as Function;
     const inst = createComponentInstance((compFn as any).name, parentContext);
     inst.vnode = vnode;
     
-    // Hydration Barrier for Async Components
-    const result = invokeComponentSafe(inst, compFn, vnode.props || {});
+    const props = getPropsWithChildren(vnode.props, vnode.children);
+    const result = invokeComponentSafe(inst, compFn, props);
     
     if (result instanceof Promise) {
-        // Async Hydration Barrier:
-        // We cannot hydration into the future. We treat the existing server HTML 
-        // as the "Placeholder" and take over when ready.
-        
         result.then(resolvedVNode => {
             if (!inst.mounted) return;
             inst.subtree = resolvedVNode as VChild;
-            
-            // Render Client-Side (Takeover)
             const realDom = renderVNode(resolvedVNode as VChild, inst.context, false);
-            
-            if (node.parentNode) {
-                node.parentNode.replaceChild(realDom, node);
-            }
+            if (node.parentNode) node.parentNode.replaceChild(realDom, node);
             inst.dom = realDom;
             instanceDomMap.set(inst, realDom);
+            (realDom as any).__blinkInstance = inst;
             runEffects(inst);
         });
-        
-        // Temporarily claim this node
         inst.dom = node;
         inst.mounted = true;
+        (node as any).__blinkInstance = inst;
         return node;
     }
 
-    // Sync Hydration
     inst.subtree = result as VChild;
     const hydratedDom = hydrateVNode(node, inst.subtree, inst.context);
     inst.dom = hydratedDom;
     inst.mounted = true;
     instanceDomMap.set(inst, hydratedDom);
+    (hydratedDom as any).__blinkInstance = inst;
     runEffects(inst);
     return hydratedDom;
   }
 
-  // 2. Fragment
   if (vnode.tag === FragmentSymbol) {
      let sibling: Node | null = node;
      for (const child of vnode.children) {
@@ -228,10 +279,8 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
      return node; 
   }
 
-  // 3. Element
   if (node.nodeType === 1 && (node as Element).tagName.toLowerCase() === String(vnode.tag).toLowerCase()) {
       if (vnode.props) applyProps(node as Element, vnode.props);
-      
       let domChild: Node | null = getNextSibling(node.firstChild);
       for (const vChild of vnode.children) {
           if (domChild) {
@@ -245,7 +294,6 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
       return node;
   }
 
-  // Mismatch Fallback
   const newNode = renderVNode(vnode, parentContext, false);
   node.parentNode?.replaceChild(newNode, node);
   return newNode;
@@ -257,16 +305,19 @@ export function rerenderComponent(inst: ComponentInstance) {
   if (!vnodeWrapper || typeof vnodeWrapper.tag !== 'function') return;
 
   const compFn = vnodeWrapper.tag as Function;
-  const res = invokeComponentSafe(inst, compFn, vnodeWrapper.props || {});
+  const props = getPropsWithChildren(vnodeWrapper.props, vnodeWrapper.children);
+  const res = invokeComponentSafe(inst, compFn, props);
 
   if (res instanceof Promise) {
      res.then(newSubtree => {
          if (!inst.mounted) return;
          if (inst.dom && inst.dom.parentNode) {
-            const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree as VChild, inst.dom);
+            // Pass inst.context to patch
+            const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree as VChild, inst.dom, inst.context);
             inst.dom = newDom;
             inst.subtree = newSubtree as VChild;
             instanceDomMap.set(inst, newDom);
+            (newDom as any).__blinkInstance = inst;
          }
          runEffects(inst);
      });
@@ -275,15 +326,18 @@ export function rerenderComponent(inst: ComponentInstance) {
 
   const newSubtree = res as VChild;
   if (inst.dom && inst.dom.parentNode) {
-    const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree, inst.dom);
+    const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree, inst.dom, inst.context);
     inst.dom = newDom;
     inst.subtree = newSubtree;
     instanceDomMap.set(inst, newDom);
+    (newDom as any).__blinkInstance = inst;
   }
   runEffects(inst);
 }
 
-export function getInstanceForDom(node: Node): ComponentInstance | null { return null; }
+export function getInstanceForDom(node: Node): ComponentInstance | null {
+    return (node as any).__blinkInstance || null;
+}
 
 function unmountInstance(inst: ComponentInstance) {
   if (!inst) return;

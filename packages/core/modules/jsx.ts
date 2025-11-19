@@ -5,7 +5,7 @@
 // - Do NOT invoke function components here. Always return a VNode via `el()`
 //   so the runtime can create a proper ComponentInstance and run hooks/effects.
 
-import { el, FragmentSymbol } from '@engine/internal/dom';
+import { el, FragmentSymbol } from '../engine/internal/dom';
 
 type Props = Record<string, any>;
 

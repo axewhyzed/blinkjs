@@ -1,45 +1,47 @@
-// BlinkJS - portal.ts
-// Allows rendering components outside main root
+// packages/core/modules/portal.ts
+// Fixed: Made children optional to satisfy TypeScript strict JSX check
 
-import { mountApp, unmountApp } from '@engine/internal/runtime';
-
-type PortalInstance = {
-  container: HTMLElement; // wrapper div we create and mount into
-  host: HTMLElement;      // the host element where container is appended
-  comp: Function;
-  disposed: boolean;
-};
-
-const portals: PortalInstance[] = [];
+import { mountApp, unmountApp } from '../engine/internal/runtime';
+import { onStart, onEnd, onChange } from '../engine/hooks/lifecycle';
 
 /**
- * createPortal(component, target)
- * - component: BlinkJS component function
- * - target: DOM element or defaults to document.body
+ * <Portal target={document.body}>
+ * <div class="modal">...</div>
+ * </Portal>
  */
-export function createPortal(component: Function, target?: HTMLElement) {
-  const host = target || document.body;
+export function Portal(props: { children?: any; target?: HTMLElement }) {
   const container = document.createElement('div');
-  host.appendChild(container);
+  const host = props.target || document.body;
 
-  mountApp(container, component);
+  // Helper to render the content into the container
+  const renderPortal = () => {
+    // We wrap children in a function component so mountApp accepts it
+    const AppShell = () => props.children;
+    mountApp(container, AppShell);
+  };
 
-  const portal: PortalInstance = { container, host, comp: component, disposed: false };
-  portals.push(portal);
+  onStart(() => {
+    host.appendChild(container);
+    renderPortal();
+  });
 
-  // return a function to remove/unmount (idempotent)
-  return () => {
-    if (portal.disposed) return;
-    portal.disposed = true;
+  // Update content if props change
+  onChange(() => {
+    renderPortal();
+  });
 
+  // Cleanup
+  onEnd(() => {
     try {
       unmountApp(container);
     } finally {
       if (container.parentNode === host) {
         host.removeChild(container);
       }
-      const idx = portals.indexOf(portal);
-      if (idx > -1) portals.splice(idx, 1);
     }
-  };
+  });
+
+  return null;
 }
+
+export const createPortal = Portal;

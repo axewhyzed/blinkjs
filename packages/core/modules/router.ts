@@ -2,9 +2,9 @@
 // BlinkJS - router.ts
 // Fix 2: Outlet Safety + TypeScript Casting
 
-import { useSignal, Signal } from '@engine/hooks/useSignal';
-import { onStart } from '@engine/hooks/lifecycle';
-import { el, FragmentSymbol } from '@engine/internal/dom'; 
+import { useSignal, Signal } from '../engine/hooks/useSignal';
+import { onStart } from '../engine/hooks/lifecycle';
+import { el, FragmentSymbol } from '../engine/internal/dom'; 
 import { createContext, useContext } from './context';
 
 // --- Types ---
@@ -40,7 +40,7 @@ export function defineRoutes(defs: RouteDef[]) {
 /**
  * <Router routes={...}>
  */
-export function Router(props: { routes?: RouteDef[]; children: any }) {
+export function Router(props: { routes?: RouteDef[]; children?: any }) {
   const initialRoutes = props.routes || globalRoutes;
   const compiledRoutes = initialRoutes.map(compileRoute);
   
@@ -122,11 +122,17 @@ export function navigateTo(path: string, replace = false) {
 }
 
 export function link(event: MouseEvent) {
-  const target = event.currentTarget as HTMLAnchorElement | null;
+  // In global delegation, currentTarget is 'document'.
+  // We must find the closest anchor tag from the actual target.
+  const target = (event.target as Element).closest('a');
+  
   if (!target) return;
+  
   const href = target.getAttribute('href');
   if (!href) return;
+
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+
   event.preventDefault();
   navigateTo(href);
 }

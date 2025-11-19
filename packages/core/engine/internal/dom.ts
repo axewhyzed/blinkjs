@@ -1,5 +1,5 @@
-// packages/core/src/dom.ts
-// BlinkJS - DOM utilities with SVG & strict styles
+// packages/core/engine/internal/dom.ts
+// BlinkJS - DOM utilities (Hardened)
 
 import { Signal } from '../hooks/useSignal';
 import { getCurrentComponentUnsafe } from './component';
@@ -44,27 +44,34 @@ export function isVNode(x: any): x is VNode {
   return x != null && typeof x === 'object' && 'tag' in x && 'children' in x;
 }
 
-// Standard HTML creation
 export function createDom(vnode: VChild): Node {
   return createDomInternal(vnode, false);
 }
 
-// Internal helper that supports SVG namespace flag
+// Internal helper
 export function createDomInternal(vnode: VChild, isSvg: boolean): Node {
   if (vnode == null) return textNode('');
   if (typeof vnode === 'string' || typeof vnode === 'number') return textNode(vnode);
   if (isSignal(vnode)) return createSignalNode(vnode);
+
+  // HARDENING FIX:
+  // If we get here, it SHOULD be a VNode. If it's not (e.g. a plain object),
+  // we must treat it as text to prevent a crash.
+  if (!isVNode(vnode)) {
+    // Fallback for unknown objects (e.g. Date, {}): render string representation
+    return textNode(String(vnode));
+  }
 
   const v = vnode as VNode;
   if (typeof v.tag === 'function') throw new Error('[BlinkJS] Function VNode passed to createDom');
   
   if (v.tag === FragmentSymbol) {
     const frag = document.createDocumentFragment();
+    // Safe access now guaranteed by isVNode check above
     for (const child of v.children) frag.appendChild(createDomInternal(child, isSvg));
     return frag;
   }
 
-  // Check if entering SVG mode
   const elementTag = String(v.tag).toLowerCase();
   if (elementTag === 'svg') isSvg = true;
 
@@ -106,7 +113,7 @@ function appendChild(parent: Node, child: any, isSvg: boolean): void {
   } else if (isVNode(child)) {
     parent.appendChild(createDomInternal(child, isSvg));
   } else if (child != null) {
-    parent.appendChild(textNode(child));
+    parent.appendChild(textNode(child)); // Fallback for strings/numbers/objects
   }
 }
 
@@ -146,7 +153,6 @@ export function setProp(el: Element, name: string, value: any) {
   if (name === 'style') {
     if (typeof value === 'string') { (el as HTMLElement).style.cssText = value; return; }
     if (value && typeof value === 'object') {
-      // Safe casting for CSSStyleDeclaration compatibility
       const style = (el as HTMLElement).style;
       for (const [sk, sv] of Object.entries(value as Partial<CSSStyleDeclaration>)) {
         if (sv != null) style[sk as any] = String(sv);

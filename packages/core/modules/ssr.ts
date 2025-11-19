@@ -7,8 +7,8 @@
 //
 // NOTE: This is intentionally tiny. It doesn't hydrate; it's for pre-rendering.
 
-import { FragmentSymbol, VChild, VNode, isVNode } from '@engine/internal/dom';
-import { createComponentInstance, resetHooks, setCurrentComponent } from '@engine/internal/component';
+import { FragmentSymbol, VChild, VNode, isVNode } from '../engine/internal/dom';
+import { createComponentInstance, resetHooks, setCurrentComponent } from '../engine/internal/component';
 
 // ---- local helpers ----
 
