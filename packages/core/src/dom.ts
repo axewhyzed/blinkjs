@@ -1,5 +1,5 @@
 // packages/core/src/dom.ts
-// BlinkJS - DOM utilities with auto-reactive signals
+// BlinkJS - DOM utilities with auto-reactive signals & Event Delegation
 
 import { Signal } from './hooks/useSignal';
 import { getCurrentComponentUnsafe } from './component';
@@ -17,6 +17,28 @@ export type ComponentFn = (
 ) => VChild | VChild[];
 
 export const FragmentSymbol = Symbol('BLINK_FRAGMENT');
+
+// ---- Event Delegation Globals ----
+const delegatedEvents = new Set<string>();
+const rootDocument = typeof document !== 'undefined' ? document : null;
+
+/**
+ * Global handler that traps events at the document level and simulates bubbling.
+ */
+function globalEventHandler(e: Event) {
+  let target = e.target as Node | null;
+  const eventType = e.type.toLowerCase();
+
+  // Simulate bubbling: traverse from target up to root
+  while (target && target !== rootDocument) {
+    const handlers = (target as any).__blinkHandlers;
+    if (handlers && handlers[eventType]) {
+      handlers[eventType](e);
+      // Optional: check e.cancelBubble if strict stopPropagation is needed
+    }
+    target = target.parentNode;
+  }
+}
 
 // ---- helper to detect BlinkJS signals ----
 function isSignal(obj: any): obj is Signal<any> {
@@ -159,7 +181,7 @@ function appendChild(parent: Node, child: any): void {
 /**
  * setProp(el, name, value)
  * Handles:
- * - Events: onClick -> addEventListener('click', handler)
+ * - Events: Delegated to document root for performance
  * - class / className
  * - style: object { color: 'red' } or string
  * - boolean attributes: disabled, checked, etc.
@@ -168,12 +190,32 @@ function appendChild(parent: Node, child: any): void {
 export function setProp(el: Element, name: string, value: any) {
   if (name === 'className') name = 'class';
 
-  if (/^on[A-Z]/.test(name) && typeof value === 'function') {
-    const eventName = name.slice(2).toLowerCase();
-    el.addEventListener(eventName, value);
+  // -- Optimized Event Delegation --
+  if (/^on[A-Z]/.test(name)) {
+    const eventName = name.slice(2).toLowerCase(); // onClick -> click
+    
+    // Store handler on the element itself
+    const handlers = (el as any).__blinkHandlers || ((el as any).__blinkHandlers = {});
+    
+    if (value) {
+      handlers[eventName] = value;
+      
+      // Register global listener only once per event type
+      if (!delegatedEvents.has(eventName) && rootDocument) {
+        delegatedEvents.add(eventName);
+        
+        // Handle focus/blur via capturing or specific mapping if needed.
+        // For simplicity, we use standard binding; note focus/blur don't bubble standardly.
+        const useCapture = eventName === 'focus' || eventName === 'blur';
+        rootDocument.addEventListener(eventName, globalEventHandler, useCapture);
+      }
+    } else {
+      delete handlers[eventName];
+    }
     return;
   }
 
+  // -- Style Handling --
   if (name === 'style') {
     if (!value) {
       (el as HTMLElement).removeAttribute('style');
@@ -191,6 +233,7 @@ export function setProp(el: Element, name: string, value: any) {
     return;
   }
 
+  // -- Boolean Attributes --
   const booleanAttrs = new Set(['disabled', 'checked', 'readonly', 'multiple', 'selected', 'hidden']);
   if (booleanAttrs.has(name)) {
     if (value) {
@@ -203,6 +246,7 @@ export function setProp(el: Element, name: string, value: any) {
     return;
   }
 
+  // -- Normal Attributes --
   if (value === null || value === undefined) {
     el.removeAttribute(name);
     return;
