@@ -1,5 +1,5 @@
 // packages/core/src/dom.ts
-// BlinkJS - DOM utilities with Event Delegation & Signal Binding
+// BlinkJS - DOM utilities with SVG & strict styles
 
 import { Signal } from './hooks/useSignal';
 import { getCurrentComponentUnsafe } from './component';
@@ -11,7 +11,8 @@ export type VNode = {
   children: VChild[];
 };
 
-export type ComponentFn = (props: Record<string, any>, ...children: VChild[]) => VChild | VChild[];
+export type ComponentFn = (props: Record<string, any>, ...children: VChild[]) => VChild | VChild[] | Promise<VChild | VChild[]>;
+
 export const FragmentSymbol = Symbol('BLINK_FRAGMENT');
 
 const delegatedEvents = new Set<string>();
@@ -43,7 +44,13 @@ export function isVNode(x: any): x is VNode {
   return x != null && typeof x === 'object' && 'tag' in x && 'children' in x;
 }
 
+// Standard HTML creation
 export function createDom(vnode: VChild): Node {
+  return createDomInternal(vnode, false);
+}
+
+// Internal helper that supports SVG namespace flag
+export function createDomInternal(vnode: VChild, isSvg: boolean): Node {
   if (vnode == null) return textNode('');
   if (typeof vnode === 'string' || typeof vnode === 'number') return textNode(vnode);
   if (isSignal(vnode)) return createSignalNode(vnode);
@@ -53,13 +60,21 @@ export function createDom(vnode: VChild): Node {
   
   if (v.tag === FragmentSymbol) {
     const frag = document.createDocumentFragment();
-    for (const child of v.children) frag.appendChild(createDom(child));
+    for (const child of v.children) frag.appendChild(createDomInternal(child, isSvg));
     return frag;
   }
 
-  const elNode = document.createElement(String(v.tag));
+  // Check if entering SVG mode
+  const elementTag = String(v.tag).toLowerCase();
+  if (elementTag === 'svg') isSvg = true;
+
+  const elNode = isSvg 
+    ? document.createElementNS('http://www.w3.org/2000/svg', elementTag)
+    : document.createElement(elementTag);
+
   if (v.props) applyProps(elNode, v.props);
-  for (const child of v.children) appendChild(elNode, child);
+  for (const child of v.children) appendChild(elNode, child, isSvg);
+  
   return elNode;
 }
 
@@ -69,11 +84,9 @@ function createSignalNode(signal: Signal<any>): Node {
   return node;
 }
 
-// Suggestion 1: Exposed for Hydration
 export function bindSignalToNode(node: Node, signal: Signal<any>) {
   const update = () => {
     const newVal = String(signal.value);
-    // Only text nodes supported for direct signal children
     if (node.nodeType === 3 && node.textContent !== newVal) {
         node.textContent = newVal;
     }
@@ -85,19 +98,18 @@ export function bindSignalToNode(node: Node, signal: Signal<any>) {
   }
 }
 
-function appendChild(parent: Node, child: any): void {
+function appendChild(parent: Node, child: any, isSvg: boolean): void {
   if (Array.isArray(child)) {
-    child.forEach(c => appendChild(parent, c));
+    child.forEach(c => appendChild(parent, c, isSvg));
   } else if (isSignal(child)) {
     parent.appendChild(createSignalNode(child));
   } else if (isVNode(child)) {
-    parent.appendChild(createDom(child));
+    parent.appendChild(createDomInternal(child, isSvg));
   } else if (child != null) {
     parent.appendChild(textNode(child));
   }
 }
 
-// Shared between createDom and Hydration
 export function applyProps(el: Element, props: Record<string, any>) {
     for (const [k, val] of Object.entries(props)) {
         if (isSignal(val)) {
@@ -134,7 +146,11 @@ export function setProp(el: Element, name: string, value: any) {
   if (name === 'style') {
     if (typeof value === 'string') { (el as HTMLElement).style.cssText = value; return; }
     if (value && typeof value === 'object') {
-      Object.assign((el as HTMLElement).style, value);
+      // Safe casting for CSSStyleDeclaration compatibility
+      const style = (el as HTMLElement).style;
+      for (const [sk, sv] of Object.entries(value as Partial<CSSStyleDeclaration>)) {
+        if (sv != null) style[sk as any] = String(sv);
+      }
     }
     return;
   }
