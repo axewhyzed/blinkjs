@@ -1,19 +1,13 @@
 // packages/core/engine/internal/runtime.ts
-// Fixed: Guard unmountComponentAtNode, cancel updates, static imports
+// Fixed: Aliased 'el' import to 'h' to avoid shadowing error
 
-import { VNode, VChild, createDomInternal, Fragment, isVNode, applyProps, bindSignalToNode } from './dom';
+import { VNode, VChild, createDomInternal, Fragment, isVNode, applyProps, bindSignalToNode, el as h } from './dom';
 import { ComponentInstance, createComponentInstance, setCurrentComponent, resetHooks } from './component';
 import { patch } from './reconcile';
 import { scheduleUpdate as batchSchedule, cancelUpdate } from './batcher';
 
 const instanceDomMap = new WeakMap<ComponentInstance, Node>();
-
-type RootInfo = {
-  rootEl: Element;
-  appComponent?: Function;
-  rootInstance?: ComponentInstance;
-};
-const roots = new Map<Element, RootInfo>();
+const roots = new Map<Element, any>();
 
 export function scheduleUpdate(inst: ComponentInstance) {
   batchSchedule(inst);
@@ -31,10 +25,13 @@ export function mountApp(rootSelector: string | Element, App: Function) {
   const vnode = invokeComponentSync(rootInst, App, {});
   rootInst.subtree = vnode;
 
-  if ((rootEl as Element).hasChildNodes()) {
+  const hasRealContent = (rootEl as Element).children.length > 0;
+
+  if (hasRealContent) {
     const dom = hydrateVNode((rootEl as Element).firstChild!, vnode, rootInst.context);
     rootInst.dom = dom;
   } else {
+    (rootEl as Element).innerHTML = '';
     const dom = renderVNode(vnode, rootInst.context, false);
     rootInst.dom = dom;
     rootEl!.appendChild(dom);
@@ -54,18 +51,14 @@ export function unmountApp(rootSelector: string | Element) {
   (rootEl as Element).innerHTML = '';
 }
 
-// FIX: Guard against undefined node
 export function unmountComponentAtNode(node: Node | null | undefined) {
   if (!node) return;
   const inst = (node as any).__blinkInstance;
-  if (inst) {
-    unmountInstance(inst);
-  }
+  if (inst) unmountInstance(inst);
 }
 
 export function updateComponentFromVNode(dom: Node, newVNode: VNode, context: Record<symbol, unknown>) {
   const inst = (dom as any).__blinkInstance as ComponentInstance;
-  // Safety check: If instance is missing or tag mismatch, do full replace
   if (!inst || inst.vnode?.tag !== newVNode.tag) {
     const newDom = renderVNode(newVNode, context);
     if (dom.parentNode) dom.parentNode.replaceChild(newDom, dom);
@@ -76,12 +69,13 @@ export function updateComponentFromVNode(dom: Node, newVNode: VNode, context: Re
   const props = getPropsWithChildren(newVNode.props, newVNode.children);
   
   inst.vnode = newVNode;
-  
+  const currentVNode = newVNode;
+
   const res = invokeComponentSafe(inst, compFn, props);
   
   if (res instanceof Promise) {
      res.then(newSubtree => {
-         if (!inst.mounted) return;
+         if (!inst.mounted || inst.vnode !== currentVNode) return;
          if (inst.dom && inst.dom.parentNode) {
             const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree as VChild, inst.dom, context);
             inst.dom = newDom;
@@ -107,7 +101,6 @@ export function updateComponentFromVNode(dom: Node, newVNode: VNode, context: Re
   return inst.dom!;
 }
 
-
 function getPropsWithChildren(vnodeProps: any, children: VChild[]) {
   const props = vnodeProps || {};
   if (children && children.length > 0) {
@@ -117,7 +110,6 @@ function getPropsWithChildren(vnodeProps: any, children: VChild[]) {
 }
 
 function invokeComponentSafe(inst: ComponentInstance, compFn: Function, props: any): VChild | Promise<VChild> {
-  // FIX: Cancel pending updates
   cancelUpdate(inst);
   resetHooks(inst);
   setCurrentComponent(inst);
@@ -151,10 +143,10 @@ export function renderVNode(vnode: VChild, parentContext: Record<symbol, unknown
 
   if (!isVNode(vnode)) return createDomInternal(vnode, isSvg);
 
+  // FIX: Use aliased 'h' instead of 'el' to avoid conflict with local var 'el'
   if (vnode.tag === Fragment) {
-    const frag = document.createDocumentFragment();
-    for (const c of vnode.children) frag.appendChild(renderVNode(c, parentContext, isSvg));
-    return frag;
+    const wrapperVNode = h('div', { style: { display: 'contents' } }, vnode.children);
+    return renderVNode(wrapperVNode, parentContext, isSvg);
   }
 
   if (typeof vnode.tag === 'function') {
@@ -232,15 +224,8 @@ function hydrateVNode(node: Node, vnode: VChild, parentContext: Record<symbol, u
   }
 
   if (vnode.tag === Fragment) {
-     let sibling: Node | null = node;
-     for (const child of vnode.children) {
-         if (sibling) {
-             const next: Node | null = getNextSibling(sibling.nextSibling);
-             hydrateVNode(sibling, child, parentContext);
-             sibling = next;
-         }
-     }
-     return node; 
+     const wrapperVNode = h('div', { style: { display: 'contents' } }, vnode.children);
+     return hydrateVNode(node, wrapperVNode, parentContext);
   }
 
   if (typeof vnode.tag === 'function') {
@@ -308,8 +293,10 @@ export function rerenderComponent(inst: ComponentInstance) {
   const res = invokeComponentSafe(inst, compFn, props);
 
   if (res instanceof Promise) {
+     const currentVNode = vnodeWrapper;
      res.then(newSubtree => {
-         if (!inst.mounted) return;
+         if (!inst.mounted || inst.vnode !== currentVNode) return;
+
          if (inst.dom && inst.dom.parentNode) {
             const newDom = patch(inst.dom.parentNode, inst.subtree, newSubtree as VChild, inst.dom, inst.context);
             inst.dom = newDom;

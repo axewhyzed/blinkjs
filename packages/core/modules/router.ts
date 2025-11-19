@@ -1,10 +1,9 @@
-// packages/core/src/router.ts
-// BlinkJS - router.ts
-// Fix 2: Outlet Safety + TypeScript Casting
+// packages/core/modules/router.ts
+// Fixed: Corrected RouterContextValue type to match Signal<MatchResult>
 
-import { useSignal, Signal } from '../engine/hooks/useSignal';
+import { useSignal, useComputed, Signal } from '../engine/hooks/useSignal';
 import { onStart } from '../engine/hooks/lifecycle';
-import { el, Fragment } from '../engine/internal/dom'; 
+import { el } from '../engine/internal/dom'; 
 import { createContext, useContext } from './context';
 
 // --- Types ---
@@ -20,11 +19,19 @@ type CompiledRoute = {
   isFallback: boolean;
 };
 
+// Defined here so it can be used in RouterContextValue
+type MatchResult = { 
+  route: CompiledRoute; 
+  params: Record<string, string> 
+};
+
 type RouterContextValue = {
   path: Signal<string>;
   params: Signal<Record<string, string>>;
   query: Signal<Record<string, string>>;
   routes: CompiledRoute[];
+  // FIX: Updated type to MatchResult to match matchRoute return value
+  match: Signal<MatchResult | null>;
 };
 
 // --- Context ---
@@ -45,8 +52,15 @@ export function Router(props: { routes?: RouteDef[]; children?: any }) {
   const compiledRoutes = initialRoutes.map(compileRoute);
   
   const currentPath = useSignal(window.location.pathname + window.location.search);
-  const paramsSignal = useSignal<Record<string, string>>({});
-  const querySignal = useSignal<Record<string, string>>({});
+
+  // Computed match derived from path
+  const matchSignal = useComputed(() => matchRoute(currentPath.value, compiledRoutes));
+
+  // Computed params derived from match
+  const paramsSignal = useComputed(() => matchSignal.value ? matchSignal.value.params : {});
+
+  // Computed query derived from path
+  const querySignal = useComputed(() => parseQuery(currentPath.value.split('?')[1] || ''));
 
   onStart(() => {
     const onPop = () => currentPath.value = window.location.pathname + window.location.search;
@@ -65,10 +79,11 @@ export function Router(props: { routes?: RouteDef[]; children?: any }) {
     path: currentPath,
     params: paramsSignal,
     query: querySignal,
-    routes: compiledRoutes
+    routes: compiledRoutes,
+    match: matchSignal
   };
 
-  // Fix: Cast to 'any' to satisfy strict TS checks on generic ComponentFn
+  // Cast to 'any' to satisfy strict TS checks on generic ComponentFn
   return el(RouterCtx.Provider as any, { value }, props.children);
 }
 
@@ -79,27 +94,15 @@ export function Outlet() {
   const ctx = useContext(RouterCtx);
   if (!ctx) return el('div', null, 'Error: Outlet used outside Router');
 
-  const path = ctx.path.value;
-  const match = matchRoute(path, ctx.routes);
+  // Reactive read: Re-renders when match changes
+  const match = ctx.match.value;
 
   if (match) {
-    // Implicit batch update via signals
-    if (JSON.stringify(ctx.params.value) !== JSON.stringify(match.params)) {
-        ctx.params.value = match.params;
-    }
-    
-    const q = parseQuery(path.split('?')[1] || '');
-    if (JSON.stringify(ctx.query.value) !== JSON.stringify(q)) {
-        ctx.query.value = q;
-    }
-
+    // Accessing .route is now valid because match is typed as MatchResult
     const Comp = match.route.original.component;
     return el(Comp as any, {});
   }
 
-  // Fix 2: Return explicit null.
-  // This renders as an empty Text Node in the DOM, which is a valid "Physical" node.
-  // This prevents the crash where a parent tries to remove an empty Fragment.
   return null;
 }
 
@@ -116,14 +119,15 @@ export function useQuery() {
 
 // --- Navigation ---
 export function navigateTo(path: string, replace = false) {
-  if (replace) history.replaceState(null, '', path);
-  else history.pushState(null, '', path);
+  if (replace) {
+    history.replaceState(null, '', path);
+  } else {
+    history.pushState(null, '', path);
+  }
   window.dispatchEvent(new Event('blink:route-change'));
 }
 
 export function link(event: MouseEvent) {
-  // In global delegation, currentTarget is 'document'.
-  // We must find the closest anchor tag from the actual target.
   const target = (event.target as Element).closest('a');
   
   if (!target) return;
@@ -131,22 +135,35 @@ export function link(event: MouseEvent) {
   const href = target.getAttribute('href');
   if (!href) return;
 
-  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+    return;
+  }
 
   event.preventDefault();
   navigateTo(href);
 }
 
 // --- Internals ---
+
 function compileRoute(route: RouteDef): CompiledRoute {
-  if (route.path === '*') return { original: route, regex: /.^/, keys: [], isFallback: true };
+  if (route.path === '*') {
+    return { original: route, regex: /.^/, keys: [], isFallback: true };
+  }
   const keys: string[] = [];
-  const pattern = route.path.replace(/\/+$/, '').replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; });
+  const pattern = route.path
+    .replace(/\/+$/, '')
+    .replace(/:(\w+)/g, (_, k) => {
+      keys.push(k);
+      return '([^/]+)';
+    });
+
   const source = '^' + (pattern === '' ? '/' : pattern) + '$';
-  return { original: route, regex: new RegExp(source), keys, isFallback: false };
+  const regex = new RegExp(source);
+
+  return { original: route, regex, keys, isFallback: false };
 }
 
-function matchRoute(fullPath: string, routes: CompiledRoute[]) {
+function matchRoute(fullPath: string, routes: CompiledRoute[]): MatchResult | null {
   const pathname = fullPath.split('?')[0];
   const path = pathname !== '/' ? pathname.replace(/\/+$/, '') : '/';
 
@@ -154,10 +171,14 @@ function matchRoute(fullPath: string, routes: CompiledRoute[]) {
     if (cr.isFallback) continue;
     const m = cr.regex.exec(path);
     if (!m) continue;
+
     const params: Record<string, string> = {};
-    for (let i = 0; i < cr.keys.length; i++) params[cr.keys[i]] = decodeURIComponent(m[i + 1] || '');
+    for (let i = 0; i < cr.keys.length; i++) {
+      params[cr.keys[i]] = decodeURIComponent(m[i + 1] || '');
+    }
     return { route: cr, params };
   }
+  
   const fallback = routes.find(c => c.isFallback);
   return fallback ? { route: fallback, params: {} } : null;
 }
@@ -165,6 +186,8 @@ function matchRoute(fullPath: string, routes: CompiledRoute[]) {
 function parseQuery(qs: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (!qs) return out;
-  new URLSearchParams(qs).forEach((v, k) => out[k] = v);
+  new URLSearchParams(qs).forEach((v, k) => {
+    out[k] = v;
+  });
   return out;
 }
