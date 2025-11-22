@@ -1,6 +1,6 @@
 {
   "name": "@axewhyzed/blink-js",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "The Micro-Framework that thinks it's a Big Framework.",
   "main": "dist/engine/index.js",
@@ -8,6 +8,13 @@
   "files": [
     "dist"
   ],
+  "repository": {
+  "type": "git",
+  "url": "git+https://github.com/axewhyzed/blinkjs.git"
+	},
+	"bugs": {
+	"url": "https://github.com/axewhyzed/blinkjs/issues"
+	}
   "exports": {
     ".": "./dist/engine/index.js",
     "./core": "./dist/engine/core.js",
